@@ -2,6 +2,9 @@
 
 [中文文档 (README_ZH)](README_ZH.md)
 
+<img width="1475" height="663" alt="image" src="https://github.com/user-attachments/assets/1a476e02-d108-4184-b850-994c8094a32b" />
+
+
 ComfyUI node pack for [HyperFlow](https://github.com/Video-Rebirth/hyperflow) — Video Rebirth's 8-step LoRA for MiniMax-H3 (video + audio), ported onto ComfyUI's native MiniMax-H3 model. No ComfyUI core files are modified; no custom sampler is needed.
 
 > **Note — don't want this custom node?** Use the **standalone LoRA builds** instead — extracted and converted to plain ComfyUI format, they load with the **stock `Load LoRA` node**, nothing to install: [drbaph/MiniMax-H3-Turbo-Lora-ComfyUI](https://huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI/) — `minimax_h3_hyperflow_8step_v1.0_comfyui_bf16.safetensors` (3.93 GB) / `..._pruned_bf16.safetensors` (3.91 GB), plus rank-20 resized variants (~318/316 MB). Those apply the **backbone LoRA only** — the two-time `(t, r)` conditioning is exclusive to this node, so without it the output deviates from the released model.
