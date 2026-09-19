@@ -2,6 +2,8 @@
 
 [English README](README.md)
 
+<img width="1475" height="663" alt="image" src="https://github.com/user-attachments/assets/1a476e02-d108-4184-b850-994c8094a32b" />
+
 ComfyUI 节点包,用于运行 [HyperFlow](https://github.com/Video-Rebirth/hyperflow)——Video Rebirth 发布的 MiniMax-H3 视频+音频 8 步 LoRA。本包将其移植到 ComfyUI 原生的 MiniMax-H3 模型上,不修改任何 ComfyUI 核心文件,也**不需要自定义采样器**。
 
 > **说明——不想装本节点?** 可以直接使用**独立 LoRA 构建**——已提取并转换为纯 ComfyUI 格式,用**官方自带的 `Load LoRA` 节点**即可加载,无需安装任何东西:[drbaph/MiniMax-H3-Turbo-Lora-ComfyUI](https://huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI/)——`minimax_h3_hyperflow_8step_v1.0_comfyui_bf16.safetensors`(3.93 GB)/ `..._pruned_bf16.safetensors`(3.91 GB),以及 rank-20 压缩变体(约 318/316 MB)。这些仅应用**主干 LoRA**——双时间 `(t, r)` 条件机制是本节点独有的,没有它输出会偏离官方发布的模型。
