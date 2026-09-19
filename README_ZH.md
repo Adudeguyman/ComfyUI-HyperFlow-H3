@@ -4,7 +4,7 @@
 
 ComfyUI 节点包,用于运行 [HyperFlow](https://github.com/Video-Rebirth/hyperflow)——Video Rebirth 发布的 MiniMax-H3 视频+音频 8 步 LoRA。本包将其移植到 ComfyUI 原生的 MiniMax-H3 模型上,不修改任何 ComfyUI 核心文件,也**不需要自定义采样器**。
 
-> **说明——纯 LoRA 构建(无需本节点)**:适配器同时以提取转换后的、兼容官方 Load LoRA 节点的形式发布在 [HF 仓库](https://huggingface.co/drbaph/Hyperflow-Comfyui)——`minimax_h3_hyperflow_8step_v1.0_comfyui_bf16.safetensors`(3.93 GB)/ `..._pruned_bf16.safetensors`(3.91 GB),以及 rank-20 压缩变体(约 318/316 MB)。这些仅应用**主干 LoRA**——双时间 `(t, r)` 条件机制是本节点独有的,没有它输出会偏离官方发布的模型。
+> **说明——不想装本节点?** 可以直接使用**独立 LoRA 构建**——已提取并转换为纯 ComfyUI 格式,用**官方自带的 `Load LoRA` 节点**即可加载,无需安装任何东西:[drbaph/MiniMax-H3-Turbo-Lora-ComfyUI](https://huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI/)——`minimax_h3_hyperflow_8step_v1.0_comfyui_bf16.safetensors`(3.93 GB)/ `..._pruned_bf16.safetensors`(3.91 GB),以及 rank-20 压缩变体(约 318/316 MB)。这些仅应用**主干 LoRA**——双时间 `(t, r)` 条件机制是本节点独有的,没有它输出会偏离官方发布的模型。
 
 该适配器在官方基座之上包含两部分:一个 LoRA(rank 256,不合并的 bf16 分支),以及**双时间 `(t, r)` 条件机制**——每一步都以其正在积分的区间作为条件,`r = 1 - sigma_next`。本包只替换原生模型中的一个调用(`time_embedder(t_vals)`),将其换成混合嵌入,并通过 ComfyUI 自身的权重适配机制应用 LoRA(默认 bypass / 可选 merge)。因此,量化基座、模型卸载以及内存可视化器的表现与任何普通 MODEL 补丁完全一致。
 
