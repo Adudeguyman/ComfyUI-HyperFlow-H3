@@ -62,14 +62,6 @@ SLA 是另一种不同的稀疏方法——仅建议与针对 SLA 训练的权�
 - **aimdo malloc-graph**:在模型编译器会因打过补丁的 MiniMax-H3 前向而崩溃的 Comfy 版本上,本节点仅对自身模型调用禁用编译器(与 VDN-H3 节点相同的解决方案)。
 - 权重文件是 MiniMax-H3 的模型衍生作品,遵循 [MiniMax H3 社区许可协议](https://huggingface.co/videorebirth/hyperflow);本包代码为 Apache-2.0(schedule/embedder 移植部分衍生自 HyperFlow 与 diffusers 代码,参见上游 `THIRD_PARTY_NOTICES.md`)。
 
-## 测试
-
-纯 CPU 测试,无需任何模型文件(使用 ComfyUI 的 venv 运行):
-
-```
-python -m pytest tests/ -q
-```
-
 ## 致谢
 
 - [MiniMax-H3](https://github.com/MiniMax-AI/MiniMax-H3)(GitHub):基座模型、VAE、条件器与官方工作流。

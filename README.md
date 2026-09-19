@@ -62,14 +62,6 @@ SLA is a different sparse method — use it only with SLA-trained weights.
 - **aimdo malloc-graph**: on Comfy builds whose model compiler crashes on patched MiniMax-H3 forwards, the node disables the compiler for its own model calls (same workaround as the VDN-H3 node).
 - Weights are a Model Derivative of MiniMax-H3 under the [MiniMax H3 Community License](https://huggingface.co/videorebirth/hyperflow); this pack's code is Apache-2.0 (the schedule/embedder ports derive from the HyperFlow and diffusers code, see the upstream `THIRD_PARTY_NOTICES.md`).
 
-## Tests
-
-CPU-only, no checkpoint required (run with the ComfyUI venv):
-
-```
-python -m pytest tests/ -q
-```
-
 ## Acknowledgements
 
 - [MiniMax-H3](https://github.com/MiniMax-AI/MiniMax-H3) (GitHub): the base model, VAEs, conditioner and official workflows.
