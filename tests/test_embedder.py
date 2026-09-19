@@ -70,6 +70,12 @@ def test_endpoint_forward_matches_manual():
     assert torch.allclose(got, want, atol=1e-5)
 
 
+def _manual_ctx(t_v, t_a, r_v, r_a):
+    return {"t_v": t_v, "t_a": t_a, "r_v": r_v, "r_a": r_a,
+            "pin_v": max(t_v, 0.999), "pin_a": max(t_a, 1.0),
+            "video_mask": False, "audio_mask": False}
+
+
 def test_two_time_gate_zero_is_base():
     te = _embedder()
     endpoint = _endpoint_tensors()
@@ -79,7 +85,7 @@ def test_two_time_gate_zero_is_base():
     shared = {}
     fwd = make_two_time_forward(te.forward, endpoint_fwd, 0.0, shared)
     t_vals = torch.tensor([0.0, 0.4, 0.532, 0.999, 1.0])
-    shared["ctx"] = {"t_v": 0.532, "t_a": 0.999, "r_v": 0.6, "r_a": 0.999}
+    shared["ctx"] = _manual_ctx(0.532, 0.999, 0.6, 0.999)
     assert torch.allclose(fwd(t_vals), te.forward(t_vals), atol=1e-6)
 
 
@@ -92,7 +98,7 @@ def test_two_time_r_mapping():
     fwd = make_two_time_forward(te.forward, endpoint_fwd, GATE, shared)
     t_v, t_a, r_v, r_a = 0.532, 0.999, 0.6, 0.999
     t_vals = torch.tensor([t_v, t_a, 0.999, 0.7])
-    shared["ctx"] = {"t_v": t_v, "t_a": t_a, "r_v": r_v, "r_a": r_a}
+    shared["ctx"] = _manual_ctx(t_v, t_a, r_v, r_a)
     got = fwd(t_vals)
     # expected: blend with per-row r -- video row r_v, audio row r_a, pins/masked r = t
     r = torch.tensor([r_v, r_a, 0.999, 0.7])
@@ -176,6 +182,28 @@ def test_ctx_wrapper_pins_and_last_sigma():
         is_v = (t == ctx["t_v"])
         is_a = (t == ctx["t_a"])
         assert is_v or is_a or t in (pin_v, pin_a), f"row {t} unclassified"
+
+
+def test_unique_t_mirror_all_steps():
+    """Mirror MiniMaxH3Model._forward's seg_t/unique_t computation for plain
+    and conditioning payloads at every grid step: every row the model can put
+    in t_vals must classify as video/audio/pin -- zero silent fallbacks."""
+    grid = video_schedule_sigmas(DEFAULT_SIGMAS_8STEP)
+    payloads = ({}, {"visual_cond_noise_aug": VISUAL_COND_TIMESTEP,
+                     "audio_cond_noise_aug": AUDIO_COND_TIMESTEP})
+    for payload in payloads:
+        vis_aug = float(payload.get("visual_cond_noise_aug", VISUAL_COND_TIMESTEP))
+        aud_aug = float(payload.get("audio_cond_noise_aug", AUDIO_COND_TIMESTEP))
+        for i in range(len(grid) - 1):
+            ctx = _ctx_for(None, float(grid[i]), grid, payload)
+            t_v, t_a = ctx["t_v"], ctx["t_a"]
+            seg_t = {"text": t_v, "video": t_v, "audio": t_a,
+                     "cond": max(t_v, vis_aug), "ref_img": max(t_v, vis_aug),
+                     "cond_audio": max(t_a, aud_aug), "ref_audio": max(t_a, aud_aug)}
+            unique_t = sorted({t_v, t_a} | set(seg_t.values()))
+            for t in unique_t:
+                assert t == ctx["t_v"] or t == ctx["t_a"] \
+                    or t == ctx["pin_v"] or t == ctx["pin_a"], (i, payload, t)
 
 
 def test_wrapper_full_loop_matches_reference_formula():

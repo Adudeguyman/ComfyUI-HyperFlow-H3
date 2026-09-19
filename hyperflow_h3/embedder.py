@@ -99,7 +99,11 @@ def make_endpoint_forward(te, endpoint, alphas, cache):
 
 def make_two_time_forward(base_forward, endpoint_forward, gate, shared):
     """Replacement for ``time_embedder.forward``. Refuses to run without step
-    context, exactly like the reference TwoTimeEmbedder."""
+    context, exactly like the reference TwoTimeEmbedder. Every row of t_vals
+    must classify as video/audio/pin; an unclassified row means an endpoint
+    silently fell back to single-time -- that only legitimately happens for
+    denoise-masked rows, so without masks it warns once instead of degrading
+    quietly."""
 
     def forward(t_vals):
         ctx = shared.get("ctx")
@@ -110,8 +114,19 @@ def make_two_time_forward(base_forward, endpoint_forward, gate, shared):
                 "sample_sigmas reach the model, or remove the ApplyHyperFlow node.")
         t_emb = base_forward(t_vals)
         t = t_vals.to(torch.float32)
-        r = torch.where(t == ctx["t_v"], torch.full_like(t, ctx["r_v"]),
-                        torch.where(t == ctx["t_a"], torch.full_like(t, ctx["r_a"]), t))
+        is_v = t == ctx["t_v"]
+        is_a = t == ctx["t_a"]
+        if not shared.get("warned_fallback"):
+            fallback = ~(is_v | is_a) & (t != ctx["pin_v"]) & (t != ctx["pin_a"])
+            if bool(fallback.any()) and not (ctx["video_mask"] or ctx["audio_mask"]):
+                shared["warned_fallback"] = True
+                _log.warning(
+                    "[hyperflow] unexpected timestep rows %s with no denoise mask "
+                    "-- endpoints fall back to single-time for those rows; the "
+                    "sampler schedule may not match the trained grid.",
+                    [round(float(x), 6) for x in t[fallback].tolist()])
+        r = torch.where(is_v, torch.full_like(t, ctx["r_v"]),
+                        torch.where(is_a, torch.full_like(t, ctx["r_a"]), t))
         r_emb = endpoint_forward(r)
         return t_emb + gate * (r_emb - t_emb)
 
@@ -160,7 +175,14 @@ def make_ctx_wrapper(shared, dm, grid, label, verbose):
         r_v = float(1.0 - sigma_next)
         r_a = float(1.0 - time_shift_sigma(sigma_next, shift_v, shift_a))
 
-        shared["ctx"] = {"t_v": t_v, "t_a": t_a, "r_v": r_v, "r_a": r_a}
+        vis_aug = float(payload.get("visual_cond_noise_aug", VISUAL_COND_TIMESTEP))
+        aud_aug = float(payload.get("audio_cond_noise_aug", AUDIO_COND_TIMESTEP))
+        shared["ctx"] = {
+            "t_v": t_v, "t_a": t_a, "r_v": r_v, "r_a": r_a,
+            "pin_v": max(t_v, vis_aug), "pin_a": max(t_a, aud_aug),
+            "video_mask": kwargs.get("denoise_mask") is not None,
+            "audio_mask": kwargs.get("audio_denoise_mask") is not None,
+        }
         if verbose and not shared.get("logged"):
             shared["logged"] = True
             _log.info("[hyperflow] step ctx: t_v=%.5f r_v=%.5f t_a=%.5f r_a=%.5f",

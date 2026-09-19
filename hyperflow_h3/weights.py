@@ -102,6 +102,26 @@ def _manifest_default(manifest_path: Path) -> str:
     return default
 
 
+def _within_registered(path: Path, roots) -> bool:
+    """Containment check that tolerates Windows junctions and symlinked
+    subfolders: a junctioned subfolder
+    resolves outside its registered root, so accept a match on EITHER the
+    literal or the resolved paths. A '..' traversal filename fails both and
+    stays rejected."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    for root in roots:
+        if path.is_relative_to(root):
+            return True
+        try:
+            if resolved.is_relative_to(root.resolve()):
+                return True
+        except OSError:
+            pass
+    return False
+
 def _manifest_defaults() -> list[str]:
     """The recommended weights file of every bundled manifest (full base first)."""
     defaults = []
@@ -133,6 +153,9 @@ def resolve_weights(path_or_name: str | os.PathLike) -> Path:
         full = folder_paths.get_full_path("hyperflow", name)
         if full is not None:
             local = Path(full)
+            roots = [Path(root) for root in folder_paths.get_folder_paths("hyperflow")]
+            if not _within_registered(local, roots):
+                raise ValueError("Model path leaves its registered model directory.")
     if local.is_file():
         if local.suffix != ".safetensors":
             raise FileNotFoundError(f"{local} is not a .safetensors file.")

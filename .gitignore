@@ -2,3 +2,4 @@ tools/
 __pycache__/
 *.pyc
 .pytest_cache/
+assets/HF_REPO_README.md
