@@ -61,7 +61,7 @@ SLA 是另一种不同的稀疏方法——仅建议与针对 SLA 训练的权�
 - **基座自动检测**:节点会自动检查加载的模型——完整基座(有 `time_embedder`)或剪枝/曲线基座(无 `time_embedder`)——并强制要求匹配的权重构建,不匹配时会明确报错并指出正确的文件。剪枝基座构建仅应用主干 LoRA,以单时间运行(非官方配方)。
 - **量化基座**(int8/融合算子):被基座折叠进融合内核、无法挂钩的 LoRA 目标会被自动检测并改经 merge 路径应用——控制台报告中会列出 `N fused/int8 targets via merge`。
 - **模型采样 shift**:H3 模型默认就是视频 shift 12 / 音频 shift 3。核心 ModelSampling 节点放在 `ApplyHyperFlow` 之后,只有需要非默认 shift 时才必须添加。
-- **aimdo malloc-graph**:在模型编译器会因打过补丁的 MiniMax-H3 前向而崩溃的 Comfy 版本上,本节点仅对自身模型调用禁用编译器(与 VDN-H3 节点相同的解决方案)。
+- **aimdo malloc-graph**:在模型编译器会因打过补丁的 MiniMax-H3 前向而崩溃的 Comfy 版本上,本节点仅对自身模型调用禁用编译器。
 - 权重文件是 MiniMax-H3 的模型衍生作品,遵循 [MiniMax H3 社区许可协议](https://huggingface.co/videorebirth/hyperflow);本包代码为 Apache-2.0(schedule/embedder 移植部分衍生自 HyperFlow 与 diffusers 代码,参见上游 `THIRD_PARTY_NOTICES.md`)。
 
 ## 致谢

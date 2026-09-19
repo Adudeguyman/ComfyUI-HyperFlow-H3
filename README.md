@@ -62,7 +62,7 @@ SLA is a different sparse method — use it only with SLA-trained weights.
 - **Base detection is automatic**: the node inspects the loaded model — full base (has `time_embedder`) or pruned/curve base (no `time_embedder`) — and enforces the matching weights build with a clear error that names the right file. The pruned-base build applies the backbone LoRA only and runs single-time (off-recipe).
 - **Quantized bases** (int8/fused ops): LoRA targets that the base folds into a fused kernel (no hookable module) are detected and applied through the merge path automatically — the console report lists them as `N fused/int8 targets via merge`.
 - **Model sampling shifts**: the H3 model already defaults to video shift 12 / audio shift 3. The core ModelSampling node goes after `ApplyHyperFlow` in the chain, and is only needed if you want non-default shifts.
-- **aimdo malloc-graph**: on Comfy builds whose model compiler crashes on patched MiniMax-H3 forwards, the node disables the compiler for its own model calls (same workaround as the VDN-H3 node).
+- **aimdo malloc-graph**: on Comfy builds whose model compiler crashes on patched MiniMax-H3 forwards, the node disables the compiler for its own model calls.
 - Weights are a Model Derivative of MiniMax-H3 under the [MiniMax H3 Community License](https://huggingface.co/videorebirth/hyperflow); this pack's code is Apache-2.0 (the schedule/embedder ports derive from the HyperFlow and diffusers code, see the upstream `THIRD_PARTY_NOTICES.md`).
 
 ## Acknowledgements
