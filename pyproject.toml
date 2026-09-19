@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-hyperflow"
+version = "1.0.0"
+description = "HyperFlow: 8-step LoRA + two-time (t, r) conditioning for MiniMax-H3"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Saganaki22/ComfyUI-Hyperflow"
+
+[tool.comfy]
+PublisherId = "saganaki22"
+DisplayName = "ComfyUI-Hyperflow"
+Icon = "https://avatars.githubusercontent.com/u/84208527"

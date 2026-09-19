@@ -1,0 +1,10 @@
+{
+  "default": "custom_node_hyperflow_8step_v1.0_comfyui.safetensors",
+  "weights": {
+    "custom_node_hyperflow_8step_v1.0_comfyui.safetensors": {
+      "hyperflow_version": "1.0",
+      "sha256": "b10b1a78f23656c50bcfb2aa14ad0ffca534383f346678104eaad7c9f80ecd71",
+      "base": "full"
+    }
+  }
+}
