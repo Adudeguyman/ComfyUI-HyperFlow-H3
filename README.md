@@ -11,6 +11,12 @@ ComfyUI node pack for [HyperFlow](https://github.com/Video-Rebirth/hyperflow) â€
 
 The adapter is two things on top of the official base: a LoRA (rank 256, unmerged bf16 branches) and **two-time `(t, r)` conditioning** â€” every step is conditioned on the interval it integrates, `r = 1 - sigma_next`. This pack replaces exactly one call in the native model (`time_embedder(t_vals)`) with the blended embedding and applies the LoRA through ComfyUI's own weight-adapter machinery (bypass default / merge optional), so quantized bases, model offloading, and the memory visualizer all behave exactly like any other MODEL patch.
 
+
+
+https://github.com/user-attachments/assets/86f10b24-8ac1-4290-8e5e-ebcb3c274f93
+
+
+
 ## Install
 
 1. Clone into `ComfyUI/custom_nodes/ComfyUI-Hyperflow`.
