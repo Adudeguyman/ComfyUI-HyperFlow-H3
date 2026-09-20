@@ -9,7 +9,7 @@ ComfyUI node pack for [HyperFlow](https://github.com/Video-Rebirth/hyperflow) �
 
 > **Note — don't want this custom node?** Use the **standalone LoRA builds** instead — extracted and converted to plain ComfyUI format, they load with the **stock `Load LoRA` node**, nothing to install: [drbaph/MiniMax-H3-Turbo-Lora-ComfyUI](https://huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI/) — `minimax_h3_hyperflow_8step_v1.0_comfyui_bf16.safetensors` (3.93 GB) / `..._pruned_bf16.safetensors` (3.91 GB), plus rank-20 resized variants (~318/316 MB). Those apply the **backbone LoRA only** — the two-time `(t, r)` conditioning is exclusive to this node, so without it the output deviates from the released model.
 
-The adapter is two things on top of the official base: a LoRA (rank 256, unmerged bf16 branches) and **two-time `(t, r)` conditioning** — every step is conditioned on the interval it integrates, `r = 1 - sigma_next`. This pack replaces exactly one call in the native model (`time_embedder(t_vals)`) with the blended embedding and applies the LoRA through ComfyUI's own weight-adapter machinery (bypass default / merge optional), so quantized bases, model offloading, and the memory visualizer all behave exactly like any other MODEL patch.
+The adapter is two things on top of the official base: a LoRA (rank 256, unmerged bf16 branches) and **two-time `(t, r)` conditioning** — every step is conditioned on the interval it integrates, `r = 1 - sigma_next`. This pack blends the two embeddings and preserves distinct `(t, r)` rows through the native blocks and output heads, including the first step where video and audio share `t = 0`. All forward patches and LoRA injections use ComfyUI's ModelPatcher; no core files are changed.
 
 
 
@@ -58,8 +58,8 @@ Load Diffusion Model (MiniMax-H3)
   -> SamplerCustomAdvanced + guider + Euler    (feed the SIGMAS output, not a scheduler)
 ```
 
-- `ApplyHyperFlow` outputs the trained 9-point sigma grid as **SIGMAS** — wire it into `SamplerCustomAdvanced` in place of `BasicScheduler`. Any core sampler/guider works; the two-time endpoints are derived from `sample_sigmas` (the same mechanism the native H3 final layer uses).
-- `lora_mode`: `bypass` (default) applies the LoRA at run time — matches the reference's unmerged bf16 branches. `merge` folds it into the weights — lowest VRAM, softer on quantized bases.
+- `ApplyHyperFlow` outputs the trained 9-point sigma grid as **SIGMAS** — wire it into `SamplerCustomAdvanced` in place of `BasicScheduler`. Use Euler for the released recipe; other samplers are ablations. The two-time endpoints are derived from `sample_sigmas`.
+- `lora_mode`: `bypass` (default) applies the LoRA at run time — matches the reference's unmerged bf16 branches. `merge` folds the backbone LoRA into the weights; the two small base time projections stay in bypass so the endpoint branch reads unmodified weights. Merging quantized weights can change numerical results.
 - `download_if_missing` fetches the chosen `variant` (`auto` matches the detected base) from [drbaph/Hyperflow-Comfyui](https://huggingface.co/drbaph/Hyperflow-Comfyui) into `models/hyperflow/` — exactly the published `.safetensors`, nothing else. Off by default.
 - `ApplyHyperFlowAdvanced` adds gate and sigma-grid overrides (ablations; defaults reproduce the released model).
 
@@ -69,15 +69,20 @@ HyperFlow's validated Sol-Attn recipe maps onto the core **Model Sparse Attentio
 
 | HyperFlow (reference) | Model Sparse Attention |
 | --- | --- |
-| `dense_steps = 2` (of 8) | `start_percent = 0.25` |
+| `dense_steps = 2` (of 8) | `start_percent = 0.16` |
 | `dense_layers = (0, 1)` | `dense_blocks = "0,1"` |
 | `tau = 1.0` | `tau = 1.0` (method `sol-attn`) |
-| sink tokens: none | keep default `exact_kv_and_rows` (strictly more exact on cond rows) |
-| — | `extra_tokens = 0` for the closest recipe match (256 = more quality headroom) |
+| sink tokens: none | `sink_conditioning = "off"` |
+| — | `extra_tokens = 0` |
+
+`start_percent` is measured on the unshifted noise clock, not as a fraction of steps. With the shipped grid and shifts, 0.16 keeps exactly the first two evaluations dense. Sparse attention itself is an upstream-supported approximation; use dense attention for the dense recipe.
 
 SLA is a different sparse method — use it only with SLA-trained weights.
 
 ## Notes
+
+- Existing node weights are corrected on load: the loader swaps legacy Diffusers SwiGLU rows into ComfyUI order. No replacement download is needed. New conversions carry `hyperflow_fc1_layout=gate_value` and are not swapped again.
+- Bypass QKV adapters store the three separate LoRA projections instead of the block-diagonal zero padding, saving 1,092 MiB of adapter tensor storage for the released rank-256 build.
 
 - **Base detection is automatic**: the node inspects the loaded model — full base (has `time_embedder`) or pruned/curve base (no `time_embedder`) — and enforces the matching weights build with a clear error that names the right file. The pruned-base build applies the backbone LoRA only and runs single-time (off-recipe).
 - **Quantized bases** (int8/fused ops): LoRA targets that the base folds into a fused kernel (no hookable module) are detected and applied through the merge path automatically — the console report lists them as `N fused/int8 targets via merge`.

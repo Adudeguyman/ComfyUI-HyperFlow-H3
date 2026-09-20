@@ -147,7 +147,7 @@ class ApplyHyperFlow:
         "Apply between the model loader and the sampler, then feed the SIGMAS "
         "output into SamplerCustomAdvanced in place of a scheduler. Optionally "
         "stack the core Model Attention Backend and Model Sparse Attention nodes "
-        "on top (sol-attn: start_percent 0.25, dense_blocks \"0,1\", tau 1.0).")
+        "on top (sol-attn: start_percent 0.16, dense_blocks \"0,1\", tau 1.0).")
 
     def apply(self, model, hyperflow_file, strength, lora_mode, variant,
               download_if_missing, verbose):

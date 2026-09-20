@@ -8,7 +8,7 @@ ComfyUI 节点包,用于运行 [HyperFlow](https://github.com/Video-Rebirth/hype
 
 > **说明——不想装本节点?** 可以直接使用**独立 LoRA 构建**——已提取并转换为纯 ComfyUI 格式,用**官方自带的 `Load LoRA` 节点**即可加载,无需安装任何东西:[drbaph/MiniMax-H3-Turbo-Lora-ComfyUI](https://huggingface.co/drbaph/MiniMax-H3-Turbo-Lora-ComfyUI/)——`minimax_h3_hyperflow_8step_v1.0_comfyui_bf16.safetensors`(3.93 GB)/ `..._pruned_bf16.safetensors`(3.91 GB),以及 rank-20 压缩变体(约 318/316 MB)。这些仅应用**主干 LoRA**——双时间 `(t, r)` 条件机制是本节点独有的,没有它输出会偏离官方发布的模型。
 
-该适配器在官方基座之上包含两部分:一个 LoRA(rank 256,不合并的 bf16 分支),以及**双时间 `(t, r)` 条件机制**——每一步都以其正在积分的区间作为条件,`r = 1 - sigma_next`。本包只替换原生模型中的一个调用(`time_embedder(t_vals)`),将其换成混合嵌入,并通过 ComfyUI 自身的权重适配机制应用 LoRA(默认 bypass / 可选 merge)。因此,量化基座、模型卸载以及内存可视化器的表现与任何普通 MODEL 补丁完全一致。
+该适配器在官方基座之上包含两部分:一个 LoRA(rank 256,不合并的 bf16 分支),以及**双时间 `(t, r)` 条件机制**——每一步都以其正在积分的区间作为条件,`r = 1 - sigma_next`。本包混合两个时间嵌入,并通过 ModelPatcher 在原生模块和输出头之间保留不同的 `(t, r)` 行,包括视频和音频共享 `t = 0` 的第一步。无需修改 ComfyUI 核心文件。
 
 ## 安装
 
@@ -38,7 +38,7 @@ Load Diffusion Model (MiniMax-H3)
 ```
 
 - `ApplyHyperFlow` 会将训练好的 9 点 sigma 网格作为 **SIGMAS** 输出——请将它接入 `SamplerCustomAdvanced` 以替代 `BasicScheduler`。任何核心采样器/引导器都可以使用;双时间端点由 `sample_sigmas` 推导(与原生 H3 最终层使用的机制相同)。
-- `lora_mode`:`bypass`(默认)在运行时应用 LoRA——与参考实现的未合并 bf16 分支一致;`merge` 将 LoRA 折叠进权重——显存占用最低,但在量化基座上会变软。
+- `lora_mode`:`bypass`(默认)在运行时应用 LoRA——与参考实现的未合并 bf16 分支一致;`merge` 将主干 LoRA 合并进权重,但两个时间投影仍使用 bypass,避免污染端点分支的原始权重。量化权重合并可能改变数值结果。
 - `download_if_missing`:从 [drbaph/Hyperflow-Comfyui](https://huggingface.co/drbaph/Hyperflow-Comfyui) 下载所选 `variant`(`auto` 自动匹配检测到的基座)到 `models/hyperflow/`——仅下载发布的 `.safetensors` 文件,别无其他。默认关闭。
 - `ApplyHyperFlowAdvanced` 提供 gate 与 sigma 网格覆盖选项(用于消融实验;默认值可精确复现官方发布的模型)。
 
@@ -48,15 +48,19 @@ HyperFlow 官方验证的 Sol-Attn 配方对应核心 **Model Sparse Attention**
 
 | HyperFlow(参考实现) | Model Sparse Attention |
 | --- | --- |
-| `dense_steps = 2`(共 8 步) | `start_percent = 0.25` |
+| `dense_steps = 2`(共 8 步) | `start_percent = 0.16` |
 | `dense_layers = (0, 1)` | `dense_blocks = "0,1"` |
 | `tau = 1.0` | `tau = 1.0`(方法选 `sol-attn`) |
-| sink tokens: 无 | 保持默认 `exact_kv_and_rows`(对条件行严格更精确) |
-| — | `extra_tokens = 0` 最接近官方配方(256 = 更多质量冗余) |
+| sink tokens: 无 | `sink_conditioning = "off"` |
+| — | `extra_tokens = 0` |
+| 不按序列长度禁用 | `min_tokens = 0` |
 
 SLA 是另一种不同的稀疏方法——仅建议与针对 SLA 训练的权重配合使用。
 
 ## 说明
+
+- 旧节点权重的 SwiGLU 行顺序会在加载时自动修正,无需重新下载。新转换文件带有 `hyperflow_fc1_layout=gate_value`,不会重复交换。
+- 默认网格和 shift 下,`start_percent = 0.16` 保持前两步使用密集注意力;该百分比不是步数比例。
 
 - **基座自动检测**:节点会自动检查加载的模型——完整基座(有 `time_embedder`)或剪枝/曲线基座(无 `time_embedder`)——并强制要求匹配的权重构建,不匹配时会明确报错并指出正确的文件。剪枝基座构建仅应用主干 LoRA,以单时间运行(非官方配方)。
 - **量化基座**(int8/融合算子):被基座折叠进融合内核、无法挂钩的 LoRA 目标会被自动检测并改经 merge 路径应用——控制台报告中会列出 `N fused/int8 targets via merge`。

@@ -4,13 +4,13 @@ hyperflow_h3/embedder.py + blocks.py (Video-Rebirth/hyperflow, Apache-2.0).
 HyperFlow conditions every denoising step on the interval it integrates,
 ``(t, r)`` with ``r = 1 - sigma_next``, not on the point ``t``. ComfyUI's
 MiniMax-H3 already reduces the packed sequence's distinct timesteps to a small
-sorted table ``t_vals`` and indexes rows into it, so the port replaces exactly
-one call -- ``time_embedder(t_vals)`` -- with::
+sorted table ``t_vals``. The port expands collisions into distinct (t, r) pairs
+and remaps the block/output rows through ModelPatcher forward patches::
 
     t_emb = emb_t(t) + gate * (emb_r(r) - emb_t(t))
 
 where ``emb_t`` is the model's own ``time_embedder`` (its LoRA rides the normal
-bypass/merge path) and ``emb_r`` is a re-implementation of the same embedder on
+bypass path, including in merge mode) and ``emb_r`` is a re-implementation of the same embedder on
 raw weights plus the file's ``endpoint_time_embedder`` LoRA, held as captured
 tensors -- the module tree is never touched, so ComfyUI's streaming loader
 backup/restore is unaffected (the failure mode the Turbo node documents).
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import math
+from ctypes import c_float
 
 import torch
 import torch.nn.functional as F
@@ -112,21 +113,39 @@ def make_two_time_forward(base_forward, endpoint_forward, gate, shared):
                 "ApplyHyperFlow: the two-time embedder ran without step context. "
                 "Sample through a core guider/sampler (SamplerCustomAdvanced) so "
                 "sample_sigmas reach the model, or remove the ApplyHyperFlow node.")
-        t_emb = base_forward(t_vals)
-        t = t_vals.to(torch.float32)
-        is_v = t == ctx["t_v"]
-        is_a = t == ctx["t_a"]
-        if not shared.get("warned_fallback"):
-            fallback = ~(is_v | is_a) & (t != ctx["pin_v"]) & (t != ctx["pin_a"])
-            if bool(fallback.any()) and not (ctx["video_mask"] or ctx["audio_mask"]):
+        times = t_vals.tolist()
+        tv, ta, rv, ra = (c_float(ctx[key]).value for key in ("t_v", "t_a", "r_v", "r_a"))
+        pins = {c_float(ctx["pin_v"]).value, c_float(ctx["pin_a"]).value}
+        if not shared.get("warned_fallback") and not (ctx["video_mask"] or ctx["audio_mask"]):
+            fallback = [t for t in times if t not in pins and t not in (tv, ta)]
+            if fallback:
                 shared["warned_fallback"] = True
                 _log.warning(
                     "[hyperflow] unexpected timestep rows %s with no denoise mask "
                     "-- endpoints fall back to single-time for those rows; the "
                     "sampler schedule may not match the trained grid.",
-                    [round(float(x), 6) for x in t[fallback].tolist()])
-        r = torch.where(is_v, torch.full_like(t, ctx["r_v"]),
-                        torch.where(is_a, torch.full_like(t, ctx["r_a"]), t))
+                    [round(t, 6) for t in fallback])
+        pairs = [(t, rv if t == tv else ra if t == ta else t) for t in times]
+        pair_rows = {pair: i for i, pair in enumerate(pairs)}
+        row_maps = {kind: list(range(len(times))) for kind in ("video", "audio", "pin")}
+        for i, t in enumerate(times):
+            endpoints = {}
+            for kind, current, endpoint in (("video", tv, rv), ("audio", ta, ra)):
+                if t == current or ctx[f"{kind}_mask"]:
+                    endpoints[kind] = endpoint if t == current else t
+            if t in pins:
+                endpoints["pin"] = t
+            for kind, r in endpoints.items():
+                pair = (t, r)
+                if pair not in pair_rows:
+                    pair_rows[pair] = len(pairs)
+                    pairs.append(pair)
+                row_maps[kind][i] = pair_rows[pair]
+        ctx["row_maps"] = row_maps
+        ctx["tensor_row_maps"] = {}
+        t = t_vals.new_tensor([pair[0] for pair in pairs])
+        r = t_vals.new_tensor([pair[1] for pair in pairs])
+        t_emb = base_forward(t)
         r_emb = endpoint_forward(r)
         return t_emb + gate * (r_emb - t_emb)
 
@@ -136,6 +155,50 @@ def make_two_time_forward(base_forward, endpoint_forward, gate, shared):
     # fresh clone while this patch is still resident must unwrap to the true
     # original instead of wrapping this wrapper -- a wrapper-on-wrapper leaves
     # the inner one bound to the stale (cleared) step context.
+    forward._hyperflow_base_forward = base_forward
+    return forward
+
+
+def _remap_row(ctx, row, kind):
+    mapping = ctx["row_maps"][kind]
+    if isinstance(row, int):
+        return mapping[row]
+    key = (kind, row.device)
+    if key not in ctx["tensor_row_maps"]:
+        ctx["tensor_row_maps"][key] = row.new_tensor(mapping)
+    return ctx["tensor_row_maps"][key][row]
+
+
+def make_block_forward(base_forward, shared):
+    def forward(x, t_emb, mod_segments, rope_freqs, *args, **kwargs):
+        ctx = shared["ctx"]
+        if ctx.get("source_segments") is not mod_segments:
+            layout = ctx["transformer_options"]["minimax_h3_layout"]
+            segments = iter(layout.segments)
+            _, stop, kind = next(segments)
+            remapped = []
+            for a, b, row in mod_segments:
+                while a >= stop:
+                    _, stop, kind = next(segments)
+                stream = "video" if kind in ("video", "text") else "audio" if kind == "audio" else "pin"
+                remapped.append((a, b, _remap_row(ctx, row // 3, stream) * 3 + row % 3))
+            ctx["mod_segments"] = remapped
+            ctx["source_segments"] = mod_segments
+        return base_forward(x, t_emb, ctx["mod_segments"], rope_freqs, *args, **kwargs)
+
+    forward._hyperflow_two_time = True
+    forward._hyperflow_base_forward = base_forward
+    return forward
+
+
+def make_final_forward(base_forward, shared):
+    def forward(x, t_emb, video_seg, audio_seg, *args, **kwargs):
+        ctx = shared["ctx"]
+        video_seg = (*video_seg[:2], _remap_row(ctx, video_seg[2], "video"))
+        audio_seg = (*audio_seg[:2], _remap_row(ctx, audio_seg[2], "audio"))
+        return base_forward(x, t_emb, video_seg, audio_seg, *args, **kwargs)
+
+    forward._hyperflow_two_time = True
     forward._hyperflow_base_forward = base_forward
     return forward
 
@@ -169,7 +232,9 @@ def make_ctx_wrapper(shared, dm, grid, label, verbose):
         # transformer_options, minimax_payload=..., ...); read both ways
         timestep = args[1] if len(args) > 1 else kwargs.get("timestep")
         transformer_options = (args[3] if len(args) > 3
-                               else kwargs.get("transformer_options")) or {}
+                               else kwargs.get("transformer_options"))
+        if transformer_options is None:
+            transformer_options = {}
         payload = kwargs.get("minimax_payload") or {}
 
         sigma_v = (timestep.flatten()[0] / 1000.0).float().clamp(min=1e-6)
@@ -204,6 +269,7 @@ def make_ctx_wrapper(shared, dm, grid, label, verbose):
             "pin_v": max(t_v, vis_aug), "pin_a": max(t_a, aud_aug),
             "video_mask": kwargs.get("denoise_mask") is not None,
             "audio_mask": kwargs.get("audio_denoise_mask") is not None,
+            "transformer_options": transformer_options,
         }
         if verbose and not shared.get("logged"):
             shared["logged"] = True
@@ -249,6 +315,13 @@ def install_two_time(new_model, weights, gate_override=None, verbose=False):
         cache)
     forward = make_two_time_forward(base_forward, endpoint_forward, gate, shared)
     new_model.add_object_patch(patch_key, forward)
+    for i, block in enumerate(dm.blocks):
+        new_model.add_object_patch(
+            f"diffusion_model.blocks.{i}.forward",
+            make_block_forward(_unwrap_two_time(block.forward), shared))
+    new_model.add_object_patch(
+        "diffusion_model.final_layer.forward",
+        make_final_forward(_unwrap_two_time(dm.final_layer.forward), shared))
     new_model.add_wrapper_with_key(
         WrappersMP.DIFFUSION_MODEL, "hyperflow_two_time",
         make_ctx_wrapper(shared, dm, video_schedule_sigmas(weights.metadata.sigmas),

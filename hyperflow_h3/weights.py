@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,7 +50,7 @@ _LAYOUT_ERROR = (
 #: same weights as a GENERIC ComfyUI LoRA: every key carries a
 #: `diffusion_model.` prefix and a per-module `.alpha` scalar. Those load with
 #: the stock Load LoRA node -- this node deliberately does not (their per-module
-#: alpha / fc1 row-swap / dropped endpoint differ from the node build).
+#: alpha / dropped endpoint differ from the node build).
 _GENERIC_LORA_ERROR = (
     "{name} is a standalone/generic ComfyUI LoRA (keys like "
     "'diffusion_model.<module>.lora_A.weight' and '.alpha'), not the HyperFlow "
@@ -217,14 +219,20 @@ def manifest_filename(variant: str) -> str:
 
 
 def _download(repo_id: str, filename: str, dest_dir: Path) -> Path:
-    """Fetch exactly one published artifact into ``dest_dir`` (via the HF cache,
-    then moved -- keeps .cache metadata out of the model folder)."""
+    """Copy the cached artifact's contents, publishing only a complete file."""
     from huggingface_hub import hf_hub_download
-    cached = Path(hf_hub_download(repo_id=repo_id, filename=filename))
     dest = dest_dir / filename
-    if not dest.exists():
-        import shutil
-        shutil.move(str(cached), str(dest))
+    if dest.is_file():
+        return dest
+    cached = Path(hf_hub_download(repo_id=repo_id, filename=filename))
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=dest_dir, suffix=".part", delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        shutil.copyfile(cached, temporary)
+        os.replace(temporary, dest)
+    finally:
+        temporary.unlink(missing_ok=True)
     return dest
 
 
@@ -288,6 +296,9 @@ def load_weights(path_or_name: str | os.PathLike) -> HyperFlowWeights:
                 name=path.name, node_full=node_full, node_pruned=node_pruned))
         plan = plan_from_keys(keys)     # converted layout only, validated
         metadata = HyperFlowMetadata.from_dict(handle.metadata())
+        fc1_layout = metadata.raw.get("hyperflow_fc1_layout", "value_gate")
+        if fc1_layout not in ("value_gate", "gate_value"):
+            raise ValueError(f"Unknown HyperFlow fc1 layout: {fc1_layout!r}.")
         tensors = {key: handle.get_tensor(key) for key in keys}
 
     lora, endpoint, alphas = {}, {}, {}
@@ -297,6 +308,10 @@ def load_weights(path_or_name: str | os.PathLike) -> HyperFlowWeights:
         if a.ndim != 2 or b.ndim != 2 or a.shape[0] != b.shape[1]:
             raise ValueError(f"{target}: not an A [rank, in] / B [out, rank] pair "
                              f"(shapes {tuple(a.shape)}, {tuple(b.shape)}).")
+        # The original node builds retained Diffusers' [value, gate] rows.
+        if target.endswith(".mlp.fc1") and fc1_layout == "value_gate":
+            value, gate = b.chunk(2, dim=0)
+            b = torch.cat((gate, value), dim=0)
         alpha = metadata.lora_alpha * (3.0 if target.endswith(".attn.qkv_proj") else 1.0)
         if entry["kind"] == "endpoint":
             endpoint[target.rsplit(".", 1)[1]] = (a, b)

@@ -261,6 +261,9 @@ class _FakePatcher:
 
     def __init__(self, dm):
         self._dm = dm
+        if not hasattr(dm, "blocks"):
+            dm.blocks = []
+            dm.final_layer = torch.nn.Identity()
         self.object_patches = {}
         self.wrappers = []
 

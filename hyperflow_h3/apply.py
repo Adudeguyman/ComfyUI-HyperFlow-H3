@@ -7,11 +7,11 @@ them on this exact model family):
 * bypass (default): run-time additive LoRA via BypassInjectionManager -- the
   base's own (possibly quantized) forward runs, the bf16 delta is added in
   activation space. Sharpest, costs extra peak VRAM.
-* merge: fold the delta into the weights via add_patches -- lowest VRAM, softer
-  on quantized bases (the delta is partly rounded away on requantize).
+* merge: fold backbone deltas into weights via add_patches; time projections
+  remain in bypass to keep the endpoint branch free of the base time LoRA.
 
-The fused attn.qkv_proj pairs (rank 3r, alpha 3x) ride the standard LoRAAdapter
-math in both modes; no custom attention code. MLP fc2 modules whose base weight
+The fused attn.qkv_proj pairs (rank 3r, alpha 3x) use standard LoRA merge math;
+bypass stores only the three nonzero blocks and evaluates separate branches. MLP fc2 modules whose base weight
 rides ComfyUI's fused int8 matmul are invisible to bypass hooks and are routed
 through merge in bypass mode (same detection the Turbo node uses).
 """
@@ -37,9 +37,9 @@ class _FrugalLoRA(comfy.weight_adapter.LoRAAdapter):
     output instead of allocating the full-size projection three times."""
 
     def bypass_forward(self, org_forward, x, *args, **kwargs):
-        base_out = org_forward(x, *args, **kwargs)
         if getattr(self, "is_conv", False):
             return super().bypass_forward(org_forward, x, *args, **kwargs)
+        base_out = org_forward(x, *args, **kwargs)
         up, down, alpha = self.weights[0], self.weights[1], self.weights[2]
         rank = down.shape[0]
         scale = (alpha / rank if alpha is not None else 1.0) \
@@ -47,6 +47,31 @@ class _FrugalLoRA(comfy.weight_adapter.LoRAAdapter):
         down = down.to(dtype=x.dtype)
         up = up.to(dtype=x.dtype)
         return base_out.add_(F.linear(F.linear(x, down), up), alpha=scale)
+
+
+class _SplitQKVLoRA(comfy.weight_adapter.LoRAAdapter):
+    """Keep only the three nonzero blocks of the fused QKV LoRA."""
+
+    def bypass_forward(self, org_forward, x, *args, **kwargs):
+        out = org_forward(x, *args, **kwargs)
+        up, down, alpha = self.weights[:3]
+        scale = (alpha / down.shape[0] if alpha is not None else 1.0) * self.multiplier
+        width = up.shape[1]
+        for i, (a, b) in enumerate(zip(down.chunk(3), up)):
+            result = out[..., i * width:(i + 1) * width]
+            result.add_(F.linear(F.linear(x, a.to(dtype=x.dtype)), b.to(dtype=x.dtype)), alpha=scale)
+        return out
+
+
+def _bypass_adapter(adapter, module):
+    up, down = adapter.weights[:2]
+    if module.endswith(".attn.qkv_proj") and up.shape[0] % 3 == 0 and down.shape[0] % 3 == 0:
+        blocks = up.reshape(3, up.shape[0] // 3, 3, down.shape[0] // 3)
+        if all(not torch.count_nonzero(blocks[i, :, j, :]).item()
+               for i in range(3) for j in range(3) if i != j):
+            compact = torch.stack([blocks[i, :, i, :] for i in range(3)])
+            return _SplitQKVLoRA(adapter.loaded_keys, (compact, *adapter.weights[1:]))
+    return _FrugalLoRA(adapter.loaded_keys, adapter.weights)
 
 
 def _int8_fused_fc2(dm, modules):
@@ -168,11 +193,6 @@ def apply_lora(new_model, weights, strength: float, mode: str) -> str:
         lora[m + ".alpha"] = torch.tensor(weights.alphas[m])
     key_map = {m: "diffusion_model.{}.weight".format(m) for m in modules}
     loaded = comfy.lora.load_lora(lora, key_map, log_missing=False)
-    sd_keys = set(model.state_dict().keys())
-
-    if mode == "merge":
-        n = len(new_model.add_patches(loaded, strength))
-        return f"{n} weights merged ({checked} shape-checked)"
 
     # invisible-to-hooks targets: fused-quant ops with no module (found via the
     # sd-key fallback above) plus int8 fc2 whose fused kernel bypasses the hook
@@ -180,6 +200,10 @@ def apply_lora(new_model, weights, strength: float, mode: str) -> str:
     fc2_fused = set(no_module)
     if dm is not None:
         fc2_fused |= set(_int8_fused_fc2(dm, modules))
+    if mode == "merge":
+        # The endpoint embeds raw time weights plus its OWN LoRA. Keep the
+        # base time LoRA in activation space so it cannot leak into that copy.
+        fc2_fused |= {m for m in modules if not m.startswith("time_embedder.")}
     manager = comfy.weight_adapter.BypassInjectionManager()
     n = 0
     for key, adapter in loaded.items():
@@ -189,7 +213,7 @@ def apply_lora(new_model, weights, strength: float, mode: str) -> str:
         if m in fc2_fused:
             continue                        # merged below
         if isinstance(adapter, comfy.weight_adapter.LoRAAdapter):
-            adapter = _FrugalLoRA(adapter.loaded_keys, adapter.weights)
+            adapter = _bypass_adapter(adapter, m)
         elif not isinstance(adapter, comfy.weight_adapter.WeightAdapterBase):
             continue
         manager.add_adapter(key, adapter, strength=strength)
@@ -201,7 +225,8 @@ def apply_lora(new_model, weights, strength: float, mode: str) -> str:
         sub = {key_map[m]: loaded[key_map[m]] for m in fc2_fused
                if key_map[m] in loaded}
         k = len(new_model.add_patches(sub, strength))
-        report += f", {k} fused/int8 targets via merge"
+        report += (f", {k} weights merged ({checked} shape-checked)" if mode == "merge"
+                   else f", {k} fused/int8 targets via merge")
     return report
 
 

@@ -429,23 +429,23 @@
       "widgets_values": [
         "sol-attn",
         1,
-        0.25,
+        0.16,
         1,
         "0,1",
-        12288,
-        256,
-        "exact_kv_and_rows",
+        0,
+        0,
+        "off",
         false
       ],
       "widgets_values_named": {
         "selection": "sol-attn",
         "selection.tau": 1,
-        "start_percent": 0.25,
+        "start_percent": 0.16,
         "end_percent": 1,
         "dense_blocks": "0,1",
-        "min_tokens": 12288,
-        "extra_tokens": 256,
-        "sink_conditioning": "exact_kv_and_rows",
+        "min_tokens": 0,
+        "extra_tokens": 0,
+        "sink_conditioning": "off",
         "verbose": false
       }
     },
@@ -785,11 +785,11 @@
         }
       },
       "widgets_values": [
-        "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "minimax_h3_fl2va_int8_convrot.safetensors",
         "default"
       ],
       "widgets_values_named": {
-        "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors",
         "weight_dtype": "default"
       }
     },
@@ -1026,7 +1026,7 @@
         }
       },
       "widgets_values": [
-        "custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors",
+        "custom_node_hyperflow_8step_v1.0_comfyui.safetensors",
         1,
         "bypass",
         "auto",
@@ -1034,7 +1034,7 @@
         false
       ],
       "widgets_values_named": {
-        "hyperflow_file": "custom_node_hyperflow_8step_v1.0_comfyui_pruned.safetensors",
+        "hyperflow_file": "custom_node_hyperflow_8step_v1.0_comfyui.safetensors",
         "strength": 1,
         "lora_mode": "bypass",
         "variant": "auto",
