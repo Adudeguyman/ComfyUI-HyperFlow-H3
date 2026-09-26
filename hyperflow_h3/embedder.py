@@ -98,6 +98,49 @@ def make_endpoint_forward(te, endpoint, alphas, cache):
     return endpoint_forward
 
 
+def time_pairs(t_vals, shared):
+    """Expand colliding timesteps and publish per-stream row maps."""
+    ctx = shared.get("ctx")
+    if ctx is None:
+        raise RuntimeError(
+            "ApplyHyperFlow: the two-time embedder ran without step context. "
+            "Sample through a core guider/sampler (SamplerCustomAdvanced) so "
+            "sample_sigmas reach the model, or remove the ApplyHyperFlow node.")
+    times = t_vals.tolist()
+    tv, ta, rv, ra = (c_float(ctx[key]).value for key in ("t_v", "t_a", "r_v", "r_a"))
+    pins = {c_float(ctx["pin_v"]).value, c_float(ctx["pin_a"]).value}
+    if not shared.get("warned_fallback") and not (ctx["video_mask"] or ctx["audio_mask"]):
+        fallback = [t for t in times if t not in pins and t not in (tv, ta)]
+        if fallback:
+            shared["warned_fallback"] = True
+            _log.warning(
+                "[hyperflow] unexpected timestep rows %s with no denoise mask "
+                "-- endpoints fall back to single-time for those rows; the "
+                "sampler schedule may not match the trained grid.",
+                [round(t, 6) for t in fallback])
+    pairs = [(t, rv if t == tv else ra if t == ta else t) for t in times]
+    pair_rows = {pair: i for i, pair in enumerate(pairs)}
+    row_maps = {kind: list(range(len(times))) for kind in ("video", "audio", "pin")}
+    for i, t in enumerate(times):
+        endpoints = {}
+        for kind, current, endpoint in (("video", tv, rv), ("audio", ta, ra)):
+            if t == current or ctx[f"{kind}_mask"]:
+                endpoints[kind] = endpoint if t == current else t
+        if t in pins:
+            endpoints["pin"] = t
+        for kind, r in endpoints.items():
+            pair = (t, r)
+            if pair not in pair_rows:
+                pair_rows[pair] = len(pairs)
+                pairs.append(pair)
+            row_maps[kind][i] = pair_rows[pair]
+    ctx["row_maps"] = row_maps
+    ctx["tensor_row_maps"] = {}
+    t = t_vals.new_tensor([pair[0] for pair in pairs])
+    r = t_vals.new_tensor([pair[1] for pair in pairs])
+    return t, r
+
+
 def make_two_time_forward(base_forward, endpoint_forward, gate, shared):
     """Replacement for ``time_embedder.forward``. Refuses to run without step
     context, exactly like the reference TwoTimeEmbedder. Every row of t_vals
@@ -107,44 +150,7 @@ def make_two_time_forward(base_forward, endpoint_forward, gate, shared):
     quietly."""
 
     def forward(t_vals):
-        ctx = shared.get("ctx")
-        if ctx is None:
-            raise RuntimeError(
-                "ApplyHyperFlow: the two-time embedder ran without step context. "
-                "Sample through a core guider/sampler (SamplerCustomAdvanced) so "
-                "sample_sigmas reach the model, or remove the ApplyHyperFlow node.")
-        times = t_vals.tolist()
-        tv, ta, rv, ra = (c_float(ctx[key]).value for key in ("t_v", "t_a", "r_v", "r_a"))
-        pins = {c_float(ctx["pin_v"]).value, c_float(ctx["pin_a"]).value}
-        if not shared.get("warned_fallback") and not (ctx["video_mask"] or ctx["audio_mask"]):
-            fallback = [t for t in times if t not in pins and t not in (tv, ta)]
-            if fallback:
-                shared["warned_fallback"] = True
-                _log.warning(
-                    "[hyperflow] unexpected timestep rows %s with no denoise mask "
-                    "-- endpoints fall back to single-time for those rows; the "
-                    "sampler schedule may not match the trained grid.",
-                    [round(t, 6) for t in fallback])
-        pairs = [(t, rv if t == tv else ra if t == ta else t) for t in times]
-        pair_rows = {pair: i for i, pair in enumerate(pairs)}
-        row_maps = {kind: list(range(len(times))) for kind in ("video", "audio", "pin")}
-        for i, t in enumerate(times):
-            endpoints = {}
-            for kind, current, endpoint in (("video", tv, rv), ("audio", ta, ra)):
-                if t == current or ctx[f"{kind}_mask"]:
-                    endpoints[kind] = endpoint if t == current else t
-            if t in pins:
-                endpoints["pin"] = t
-            for kind, r in endpoints.items():
-                pair = (t, r)
-                if pair not in pair_rows:
-                    pair_rows[pair] = len(pairs)
-                    pairs.append(pair)
-                row_maps[kind][i] = pair_rows[pair]
-        ctx["row_maps"] = row_maps
-        ctx["tensor_row_maps"] = {}
-        t = t_vals.new_tensor([pair[0] for pair in pairs])
-        r = t_vals.new_tensor([pair[1] for pair in pairs])
+        t, r = time_pairs(t_vals, shared)
         t_emb = base_forward(t)
         r_emb = endpoint_forward(r)
         return t_emb + gate * (r_emb - t_emb)

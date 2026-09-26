@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 assets/HF_REPO_README.md
+
+# validation artifacts are regenerable; keep scripts, findings and fits
+validation/*.json
+validation/*.log
+validation/abc/*.pt
+validation/abc/*.mp4
+validation/abc/*.png

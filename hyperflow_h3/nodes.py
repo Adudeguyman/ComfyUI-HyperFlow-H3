@@ -8,6 +8,7 @@ import folder_paths
 
 from hyperflow_h3.apply import apply_lora
 from hyperflow_h3.compiler import install_compiler_workaround
+from hyperflow_h3.curve import matching_fit, install_curve_refit
 from hyperflow_h3.embedder import install_two_time
 from hyperflow_h3.schedule import validate_sigmas, video_schedule_sigmas
 from hyperflow_h3.weights import ensure_downloaded, load_weights, resolve_weights
@@ -34,15 +35,17 @@ def _check_base(model):
             "ApplyHyperFlow needs a MiniMax-H3 MODEL (diffusion_model with "
             "blocks[].attn.qkv_proj). Connect a MiniMax-H3 load checkpoint / "
             "load diffusion model output first." + _LAYOUT_HINT)
-    pruned = bool(getattr(dm, "use_adaln_curves", False)) \
+    pruned = hasattr(dm, "adaln_t_table") \
         or not hasattr(dm, "time_embedder")
     return "pruned" if pruned else "full"
 
 
 def _apply(model, hyperflow_file, strength, lora_mode, verbose,
            gate_override=None, sigmas_override=None,
-           variant="auto", download_if_missing=False):
+           variant="auto", download_if_missing=False, experimental_curve_refit=False):
     base = _check_base(model)
+    if "diffusion_model.time_embedder" in model.object_patches:
+        raise RuntimeError("This MODEL already has HyperFlow applied; chain it once.")
     try:
         path = resolve_weights(hyperflow_file)
     except FileNotFoundError:
@@ -68,11 +71,15 @@ def _apply(model, hyperflow_file, strength, lora_mode, verbose,
             "custom_node_hyperflow_8step_v1.0_comfyui.safetensors (the file without "
             "'_pruned') instead.")
 
+    fit = (matching_fit(model, weights, strength, gate_override, sigmas_override)
+           if base == "pruned" and experimental_curve_refit else None)
     new_model = model.clone()
     report = apply_lora(new_model, weights, strength, lora_mode)
     gate = None
     if base == "full":
         gate = install_two_time(new_model, weights, gate_override, verbose)
+    elif fit is not None:
+        gate = install_curve_refit(new_model, fit, verbose)
     install_compiler_workaround(new_model)
 
     raw = None
@@ -136,6 +143,13 @@ class ApplyHyperFlow:
                            "else. Requires internet."}),
             "verbose": ("BOOLEAN", {"default": False, "tooltip": "Log the applied "
                         "modules and the per-step (t, r) context."}),
+        }, "optional": {
+            "experimental_curve_refit": ("BOOLEAN", {"default": False,
+                "tooltip": "Experimental checkpoint-bound conditioning fit. Exact "
+                           "file match applies silently; byte-different copies of the "
+                           "fitted base/adapter (mirrors, HF downloads) apply "
+                           "best-effort with a warning. Needs strength 1 and the "
+                           "default gate/sigmas; anything unknown uses backbone only."}),
         }}
 
     RETURN_TYPES = ("MODEL", "SIGMAS")
@@ -150,10 +164,11 @@ class ApplyHyperFlow:
         "on top (sol-attn: start_percent 0.16, dense_blocks \"0,1\", tau 1.0).")
 
     def apply(self, model, hyperflow_file, strength, lora_mode, variant,
-              download_if_missing, verbose):
+              download_if_missing, verbose, experimental_curve_refit=False):
         new_model, sigmas = _apply(model, hyperflow_file, strength, lora_mode,
                                    verbose, variant=variant,
-                                   download_if_missing=download_if_missing)
+                                   download_if_missing=download_if_missing,
+                                   experimental_curve_refit=experimental_curve_refit)
         return (new_model, sigmas)
 
 
@@ -200,6 +215,9 @@ class ApplyHyperFlowAdvanced:
                            "8-step grid). Ablation use only."}),
             "verbose": ("BOOLEAN", {"default": False, "tooltip": "Log the applied "
                         "modules and the per-step (t, r) context."}),
+        }, "optional": {
+            "experimental_curve_refit": ("BOOLEAN", {"default": False,
+                "tooltip": "Experimental checkpoint-bound fit; gate/strength/sigma overrides disable the refit and keep backbone-only behavior."}),
         }}
 
     RETURN_TYPES = ("MODEL", "SIGMAS")
@@ -211,13 +229,14 @@ class ApplyHyperFlowAdvanced:
         "Defaults reproduce the released model exactly.")
 
     def apply(self, model, hyperflow_file, strength, lora_mode, variant,
-              download_if_missing, gate, sigmas, verbose):
+              download_if_missing, gate, sigmas, verbose, experimental_curve_refit=False):
         new_model, sigmas_out = _apply(model, hyperflow_file, strength, lora_mode,
                                        verbose,
                                        gate_override=None if gate < 0 else gate,
                                        sigmas_override=sigmas or None,
                                        variant=variant,
-                                       download_if_missing=download_if_missing)
+                                       download_if_missing=download_if_missing,
+                                       experimental_curve_refit=experimental_curve_refit)
         return (new_model, sigmas_out)
 
 

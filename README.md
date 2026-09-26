@@ -2,8 +2,7 @@
 
 [中文文档 (README_ZH)](README_ZH.md)
 
-<img width="1475" height="663" alt="image" src="https://github.com/user-attachments/assets/1a476e02-d108-4184-b850-994c8094a32b" />
-
+<img width="1130" height="476" alt="image" src="https://github.com/user-attachments/assets/327cbbae-a2d7-4f86-b7ec-4dd12b6ce9e9" />
 
 ComfyUI node pack for [HyperFlow](https://github.com/Video-Rebirth/hyperflow) — Video Rebirth's 8-step LoRA for MiniMax-H3 (video + audio), ported onto ComfyUI's native MiniMax-H3 model. No ComfyUI core files are modified; no custom sampler is needed.
 
@@ -13,19 +12,8 @@ The adapter is two things on top of the official base: a LoRA (rank 256, unmerge
 
 
 
-https://github.com/user-attachments/assets/86f10b24-8ac1-4290-8e5e-ebcb3c274f93
-
-
-
 
 https://github.com/user-attachments/assets/3e2e2d5c-6a39-46e9-8946-aa42f08c3d9d
-
-
-
-
-https://github.com/user-attachments/assets/c83164e8-fd71-4cbd-bbfa-25d65cef7769
-
-
 
 
 
@@ -79,16 +67,42 @@ HyperFlow's validated Sol-Attn recipe maps onto the core **Model Sparse Attentio
 
 SLA is a different sparse method — use it only with SLA-trained weights.
 
+### Pruned / curve bases — experimental curve refit
+
+Pruned MiniMax-H3 bases have no `time_embedder`, so the two-time `(t, r)` pathway cannot apply — by default the pruned build applies the backbone LoRA only and runs single-time (off-recipe). The **experimental curve refit** restores most of the two-time signal through a tiny checkpoint-bound fit (~34 KB, bundled in `assets/curve_fits/` for the FL2VA and REF2VA pruned int8 checkpoints — no download, no extra model weights).
+
+
+
+https://github.com/user-attachments/assets/e72c45e3-2cc3-48ce-bb1a-2f0c25e7d602
+
+
+
+**Recommended settings for pruned:**
+
+- Enable **`experimental_curve_refit`** (widget on both Apply nodes; right-click → *show optional widgets* if hidden), keep **`strength = 1.0`**, and leave gate/sigma overrides empty. Matching is tiered: the exact fitted files apply silently; byte-different copies of the fitted base or adapter (mirrors, HF downloads) still apply **best-effort with a console warning** — the recipe (strength/gate/sigmas) is always validated; unknown checkpoints or a modified MODEL fall back to backbone-only, with the file hashes in the log for support.
+- Use **`bypass`** as `lora_mode` for the sharpest match to the reference branches.
+- Same sampling as full bases: **Euler** + the node's **SIGMAS** output + the Sol-Attn table above.
+- Console: `[hyperflow] curve refit disabled: <reason>` means the fallback engaged — check strength/overrides/checkpoint.
+
+Measured against the full base (fixed prompt/seed/latents): FL2VA video cosine **0.81 → 0.88**, REF2VA audio cosine **0.93 → 0.99**. It recovers *most* — not all — of the missing conditioning; the full base remains the reference. Details and per-family numbers: [`validation/curve_findings.md`](validation/curve_findings.md). New pruned checkpoints need their own fit (`validation/curve_spike.py`).
+
 ## Notes
 
 - Existing node weights are corrected on load: the loader swaps legacy Diffusers SwiGLU rows into ComfyUI order. No replacement download is needed. New conversions carry `hyperflow_fc1_layout=gate_value` and are not swapped again.
 - Bypass QKV adapters store the three separate LoRA projections instead of the block-diagonal zero padding, saving 1,092 MiB of adapter tensor storage for the released rank-256 build.
 
 - **Base detection is automatic**: the node inspects the loaded model — full base (has `time_embedder`) or pruned/curve base (no `time_embedder`) — and enforces the matching weights build with a clear error that names the right file. The pruned-base build applies the backbone LoRA only and runs single-time (off-recipe).
+- **Experimental curve refit** for pruned/curve bases: see the dedicated section above.
 - **Quantized bases** (int8/fused ops): LoRA targets that the base folds into a fused kernel (no hookable module) are detected and applied through the merge path automatically — the console report lists them as `N fused/int8 targets via merge`.
 - **Model sampling shifts**: the H3 model already defaults to video shift 12 / audio shift 3. The core ModelSampling node goes after `ApplyHyperFlow` in the chain, and is only needed if you want non-default shifts.
 - **aimdo malloc-graph**: on Comfy builds whose model compiler crashes on patched MiniMax-H3 forwards, the node disables the compiler for its own model calls.
 - Weights are a Model Derivative of MiniMax-H3 under the [MiniMax H3 Community License](https://huggingface.co/videorebirth/hyperflow); this pack's code is Apache-2.0 (the schedule/embedder ports derive from the HyperFlow and diffusers code, see the upstream `THIRD_PARTY_NOTICES.md`).
+
+## Stuck at “Model Initializing” after a ComfyUI update
+
+That status covers the whole first sampling step, including deferred weight loading and LoRA merging. It does not identify a compiler hang. `merge` reduces resident adapter memory, but still needs temporary memory and time to patch the base weights.
+
+ComfyUI v0.37 introduced automatic fast-disk detection compared with v0.36. To isolate a stall after updating, restart ComfyUI with `--disable-fast-disk` and retry the same workflow. Treat this as a diagnostic, not a confirmed HyperFlow fix. If it still stalls, report the ComfyUI commit, full console log, base/LoRA filenames, GPU/VRAM and system RAM, and whether it happens on the first chunk or a later one. Include the `[hyperflow] ... applied` line if present.
 
 ## Acknowledgements
 
