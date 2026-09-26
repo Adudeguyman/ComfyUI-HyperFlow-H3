@@ -43,7 +43,7 @@ from comfy.ldm.minimax.model import (AUDIO_COND_TIMESTEP, VISUAL_COND_TIMESTEP,
                                      time_shift_sigma)
 from comfy.patcher_extension import WrappersMP
 
-from hyperflow_h3.schedule import video_schedule_sigmas
+from .schedule import video_schedule_sigmas
 
 _log = logging.getLogger("comfy.hyperflow")
 
@@ -103,9 +103,9 @@ def time_pairs(t_vals, shared):
     ctx = shared.get("ctx")
     if ctx is None:
         raise RuntimeError(
-            "ApplyHyperFlow: the two-time embedder ran without step context. "
+            "ApplyHyperFlowH3: the two-time embedder ran without step context. "
             "Sample through a core guider/sampler (SamplerCustomAdvanced) so "
-            "sample_sigmas reach the model, or remove the ApplyHyperFlow node.")
+            "sample_sigmas reach the model, or remove the ApplyHyperFlowH3 node.")
     times = t_vals.tolist()
     tv, ta, rv, ra = (c_float(ctx[key]).value for key in ("t_v", "t_a", "r_v", "r_a"))
     pins = {c_float(ctx["pin_v"]).value, c_float(ctx["pin_a"]).value}
@@ -217,7 +217,7 @@ def _unwrap_two_time(forward):
         inner = getattr(forward, "_hyperflow_base_forward", None)
         if inner is None or id(inner) in seen:
             raise RuntimeError(
-                "ApplyHyperFlow: time_embedder.forward carries a HyperFlow patch "
+                "ApplyHyperFlowH3: time_embedder.forward carries a HyperFlow patch "
                 "this install cannot unwrap (stale wrapper from an older version?). "
                 "Restart ComfyUI and re-run the workflow.")
         seen.add(id(forward))
@@ -292,7 +292,7 @@ def make_ctx_wrapper(shared, dm, grid, label, verbose):
 def install_two_time(new_model, weights, gate_override=None, verbose=False):
     """Install the two-time embedder on a cloned patcher: the forward-attribute
     patch on time_embedder plus the DIFFUSION_MODEL context wrapper. Idempotence
-    guard: chaining ApplyHyperFlow twice on one patcher is rejected. Applying on
+    guard: chaining ApplyHyperFlowH3 twice on one patcher is rejected. Applying on
     a FRESH clone while a previous scene's patch is still resident on the shared
     module is legal (context loops): the live module forward is unwrapped back
     to the true original before the new wrapper captures it."""
@@ -300,7 +300,7 @@ def install_two_time(new_model, weights, gate_override=None, verbose=False):
     te = getattr(dm, "time_embedder", None)
     if te is None:
         raise RuntimeError(
-            "ApplyHyperFlow: this MiniMax-H3 base has no time_embedder (pruned / "
+            "ApplyHyperFlowH3: this MiniMax-H3 base has no time_embedder (pruned / "
             "curve base). HyperFlow's two-time conditioning cannot run on it; use "
             "the pruned-base build of the weights if you must sample this base.")
 

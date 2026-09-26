@@ -1,4 +1,6 @@
-# ComfyUI-Hyperflow
+# ComfyUI-HyperFlow-H3
+
+本项目是 [Saganaki22/ComfyUI-Hyperflow](https://github.com/Saganaki22/ComfyUI-Hyperflow)(Apache-2.0)的非官方延续版本,原 GitHub 仓库已无法访问。相较原版的改动:为剪枝基座与混合模型提供逐块曲线拟合、新增 Create HyperFlow H3 Curve Fit 节点,并重命名了节点 ID(`ApplyHyperFlowH3`、`ApplyHyperFlowH3Advanced`、`HyperFlowH3CurveFit`),可与原版同时安装。用原版节点制作的工作流需要替换这些节点。
 
 [English README](README.md)
 
@@ -12,7 +14,7 @@ ComfyUI 节点包,用于运行 [HyperFlow](https://github.com/Video-Rebirth/hype
 
 ## 安装
 
-1. 克隆到 `ComfyUI/custom_nodes/ComfyUI-Hyperflow`。
+1. 克隆到 `ComfyUI/custom_nodes/ComfyUI-HyperFlow-H3`。
 2. 从 [drbaph/Hyperflow-Comfyui](https://huggingface.co/drbaph/Hyperflow-Comfyui) Hugging Face 仓库下载**其中一个**转换后的权重文件(或直接打开节点的 `download_if_missing` 开关,首次运行时会自动下载):
 
 ```
@@ -27,20 +29,35 @@ ComfyUI 节点包,用于运行 [HyperFlow](https://github.com/Video-Rebirth/hype
 
 3. 重启 ComfyUI。
 
+## 支持的模型
+
+**完整版 MiniMax-H3 模型**(常规的未剪枝版本,例如 `minimax_h3_fl2va_int8_convrot` 或 `minimax_h3_ref2va_int8_convrot`):完全支持。使用完整适配器 `custom_node_hyperflow_8step_v1.0_comfyui.safetensors`,即可得到与官方发布完全一致的 HyperFlow。
+
+**剪枝版 MiniMax-H3 模型**(为节省显存而去掉部分模型的较小文件):使用 `_pruned` 适配器。剪枝去掉了 HyperFlow 用来跟踪每一步的那部分模型,因此单独使用时 HyperFlow 只能应用其 8 步 LoRA。对于下列模型,打开 `experimental_curve_refit`,本包内置的小型曲线拟合文件即可恢复其中大部分,无需额外下载:
+
+- `minimax_h3_fl2va_pruned_int8_convrot`
+- `minimax_h3_ref2va_pruned_int8_convrot`
+- FL2VA/REF2VA 混合模型 `minimax_h3_hybrid_fl2va_ref2va_b15-49`、`_b20-49`、`_b25-49-int8` 与 `_b30-49-int8`
+- `Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8`
+
+曲线拟合只匹配生成它时所用的那个文件。重命名你的文件没有问题,但同一模型重新上传或重新量化的版本属于不同文件:此时控制台会显示 `curve refit disabled`,HyperFlow 只应用 LoRA。
+
+**其他剪枝模型**(融合模型与微调模型)只应用 LoRA。如果模型作者同时发布了未剪枝版本,你可以用 **Create HyperFlow H3 Curve Fit** 节点自己生成曲线拟合,详见 [`CURVE_FITS.md`](CURVE_FITS.md)。
+
 ## 使用方法
 
 ```
 Load Diffusion Model (MiniMax-H3)
-  -> ApplyHyperFlow            (MODEL -> MODEL + SIGMAS)
+  -> ApplyHyperFlowH3            (MODEL -> MODEL + SIGMAS)
   -> [可选] Model Attention Backend        (核心节点;稠密注意力后端,含 comfy-kitchen int8)
   -> [可选] Model Sparse Attention         (核心节点;sol-attn / sla / vsa)
   -> SamplerCustomAdvanced + guider + Euler    (接入 SIGMAS 输出,而不是调度器)
 ```
 
-- `ApplyHyperFlow` 会将训练好的 9 点 sigma 网格作为 **SIGMAS** 输出——请将它接入 `SamplerCustomAdvanced` 以替代 `BasicScheduler`。任何核心采样器/引导器都可以使用;双时间端点由 `sample_sigmas` 推导(与原生 H3 最终层使用的机制相同)。
+- `ApplyHyperFlowH3` 会将训练好的 9 点 sigma 网格作为 **SIGMAS** 输出——请将它接入 `SamplerCustomAdvanced` 以替代 `BasicScheduler`。任何核心采样器/引导器都可以使用;双时间端点由 `sample_sigmas` 推导(与原生 H3 最终层使用的机制相同)。
 - `lora_mode`:`bypass`(默认)在运行时应用 LoRA——与参考实现的未合并 bf16 分支一致;`merge` 将主干 LoRA 合并进权重,但两个时间投影仍使用 bypass,避免污染端点分支的原始权重。量化权重合并可能改变数值结果。
 - `download_if_missing`:从 [drbaph/Hyperflow-Comfyui](https://huggingface.co/drbaph/Hyperflow-Comfyui) 下载所选 `variant`(`auto` 自动匹配检测到的基座)到 `models/hyperflow/`——仅下载发布的 `.safetensors` 文件,别无其他。默认关闭。
-- `ApplyHyperFlowAdvanced` 提供 gate 与 sigma 网格覆盖选项(用于消融实验;默认值可精确复现官方发布的模型)。
+- `ApplyHyperFlowH3Advanced` 提供 gate 与 sigma 网格覆盖选项(用于消融实验;默认值可精确复现官方发布的模型)。
 
 ### Sol-Attn(可选稀疏注意力)——核心节点设置
 
@@ -59,7 +76,7 @@ SLA 是另一种不同的稀疏方法——仅建议与针对 SLA 训练的权�
 
 ### 剪枝/曲线基座——实验性曲线重拟合
 
-剪枝版 MiniMax-H3 基座没有 `time_embedder`,双时间 `(t, r)` 路径无法应用——默认情况下剪枝构建只应用主干 LoRA、以单时间运行(非官方配方)。**实验性曲线重拟合**通过一个绑定到检查点的微型拟合文件(约 34 KB,已内置 `assets/curve_fits/`,覆盖 FL2VA 与 REF2VA 剪枝 int8 检查点——无需下载、不增加任何模型权重)恢复大部分双时间信号。
+剪枝版 MiniMax-H3 基座没有 `time_embedder`,双时间 `(t, r)` 路径无法应用——默认情况下剪枝构建只应用主干 LoRA、以单时间运行(非官方配方)。**实验性曲线重拟合**通过一个绑定到检查点的小型拟合文件(约 1.7 MB,每个块一组数值;无需下载、不增加任何模型权重)恢复大部分双时间信号。`assets/curve_fits/` 已内置 FL2VA 与 REF2VA 剪枝 int8 检查点、FL2VA/REF2VA 拼接块混合模型(b15/b20/b25/b30-49)以及 Singularity REF2VA 剪枝 v1.3 的拟合文件——见[列表](assets/curve_fits/README.md)。
 
 **剪枝基座推荐设置:**
 
@@ -68,7 +85,7 @@ SLA 是另一种不同的稀疏方法——仅建议与针对 SLA 训练的权�
 - 采样与完整基座相同:**Euler** + 节点的 **SIGMAS** 输出 + 上方的 Sol-Attn 参数表。
 - 控制台出现 `[hyperflow] curve refit disabled: <原因>` 表示已回退——请检查 strength/覆盖/检查点。
 
-相对完整基座实测(固定提示词/种子/初始潜变量):FL2VA 视频余弦相似度 **0.81 → 0.88**,REF2VA 音频 **0.93 → 0.99**。它恢复了*大部分*而非全部缺失条件;完整基座仍是参照标准。详细数据见 [`validation/curve_findings.md`](validation/curve_findings.md)。新的剪枝检查点需要生成自己的拟合文件(`validation/curve_spike.py`)。
+使用早期共享拟合(所有块共用一组数值)相对完整基座实测(固定提示词/种子/初始潜变量):FL2VA 视频余弦相似度 **0.81 → 0.88**,REF2VA 音频 **0.93 → 0.99**。它恢复了*大部分*而非全部缺失条件;完整基座仍是参照标准。详细数据见 [`validation/curve_findings.md`](validation/curve_findings.md)。其他剪枝检查点(包括拼接块的混合模型)需要自己的拟合文件:用 **Create HyperFlow H3 Curve Fit (Pruned Bases)** 节点(或 `tools/fit_curve.py`)生成,文件会写入 `models/hyperflow/curve_fits/`——详见 [`CURVE_FITS.md`](CURVE_FITS.md)。
 
 ## 说明
 
@@ -78,7 +95,7 @@ SLA 是另一种不同的稀疏方法——仅建议与针对 SLA 训练的权�
 - **基座自动检测**:节点会自动检查加载的模型——完整基座(有 `time_embedder`)或剪枝/曲线基座(无 `time_embedder`)——并强制要求匹配的权重构建,不匹配时会明确报错并指出正确的文件。剪枝基座构建仅应用主干 LoRA,以单时间运行(非官方配方)。
 - **剪枝/曲线基座的实验性曲线重拟合**:详见上方专门章节。
 - **量化基座**(int8/融合算子):被基座折叠进融合内核、无法挂钩的 LoRA 目标会被自动检测并改经 merge 路径应用——控制台报告中会列出 `N fused/int8 targets via merge`。
-- **模型采样 shift**:H3 模型默认就是视频 shift 12 / 音频 shift 3。核心 ModelSampling 节点放在 `ApplyHyperFlow` 之后,只有需要非默认 shift 时才必须添加。
+- **模型采样 shift**:H3 模型默认就是视频 shift 12 / 音频 shift 3。核心 ModelSampling 节点放在 `ApplyHyperFlowH3` 之后,只有需要非默认 shift 时才必须添加。
 - **aimdo malloc-graph**:在模型编译器会因打过补丁的 MiniMax-H3 前向而崩溃的 Comfy 版本上,本节点仅对自身模型调用禁用编译器。
 - 权重文件是 MiniMax-H3 的模型衍生作品,遵循 [MiniMax H3 社区许可协议](https://huggingface.co/videorebirth/hyperflow);本包代码为 Apache-2.0(schedule/embedder 移植部分衍生自 HyperFlow 与 diffusers 代码,参见上游 `THIRD_PARTY_NOTICES.md`)。
 

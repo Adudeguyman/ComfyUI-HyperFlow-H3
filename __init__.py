@@ -10,10 +10,7 @@ written anywhere. Weights resolve from models/loras/hyperflow/ (registered
 below, the same way the VDN-H3 node registers models/vdn).
 """
 
-import os, sys
-_PKG = os.path.dirname(__file__)
-if _PKG not in sys.path:
-    sys.path.insert(0, _PKG)
+import os
 
 import folder_paths
 
@@ -26,6 +23,6 @@ def _register_folder():
 if "hyperflow" not in folder_paths.folder_names_and_paths:
     _register_folder()
 
-from hyperflow_h3.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+from .hyperflow_h3.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

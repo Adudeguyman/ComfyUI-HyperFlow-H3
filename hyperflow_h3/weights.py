@@ -21,7 +21,7 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 
-from hyperflow_h3.keys import DIRECT_RE, KEY_RE, fused_qkv_pair, plan_from_keys
+from .keys import DIRECT_RE, KEY_RE, fused_qkv_pair, plan_from_keys
 
 #: Hugging Face repo holding the converted builds, fetched on demand when the user
 #: enables "download_if_missing". The node downloads exactly the file the bundled

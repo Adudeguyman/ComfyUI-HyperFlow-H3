@@ -43,7 +43,7 @@ def prepare(directory):
 
 
 def generate(directory, family, variant):
-    inputs = torch.load(directory / "inputs.pt", weights_only=False)
+    inputs = torch.load(directory / "inputs.pt", weights_only=True)
     filename = f"minimax_h3_{family}{'_pruned' if variant != 'a' else ''}_int8_convrot.safetensors"
     model = comfy.sd.load_diffusion_model(str(ROOT / "models/diffusion_models" / filename), disable_dynamic=True)
     adapter = ROOT / "models/hyperflow" / ("custom_node_hyperflow_8step_v1.0_comfyui"

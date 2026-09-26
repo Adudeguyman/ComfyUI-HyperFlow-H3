@@ -1,5 +1,6 @@
 tools/*
 !tools/convert_hyperflow.py
+!tools/fit_curve.py
 __pycache__/
 *.pyc
 .pytest_cache/

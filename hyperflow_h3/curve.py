@@ -4,24 +4,36 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 
 import torch
 from safetensors import SafetensorError, safe_open
 
 import comfy.model_management
+import folder_paths
 from comfy.patcher_extension import WrappersMP
-from hyperflow_h3.embedder import (time_pairs, make_block_forward, make_final_forward,
+from .embedder import (time_pairs, make_block_forward, make_final_forward,
                                    make_ctx_wrapper, _unwrap_two_time)
-from hyperflow_h3.schedule import video_schedule_sigmas
+from .schedule import video_schedule_sigmas
 
 _log = logging.getLogger("comfy.hyperflow")
 FIT_DIRECTORY = Path(__file__).resolve().parents[1] / "assets" / "curve_fits"
+_hashes = {}
+
+
+def fit_directories():
+    """User fits (models/hyperflow/curve_fits/) take precedence over bundled ones."""
+    return [Path(p) / "curve_fits" for p in folder_paths.get_folder_paths("hyperflow")] + [FIT_DIRECTORY]
 
 
 def file_hash(path):
-    with open(path, "rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
+    stat = os.stat(path)
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if key not in _hashes:
+        with open(path, "rb") as handle:
+            _hashes[key] = hashlib.file_digest(handle, "sha256").hexdigest()
+    return _hashes[key]
 
 
 def read_fit(path):
@@ -30,13 +42,16 @@ def read_fit(path):
         if meta.get("format") != "hyperflow_curve_fit_v1":
             raise ValueError("unknown curve fit format")
         data = {key: handle.get_tensor(key) for key in ("generated", "pinned", "t", "r")}
+    # () for a shared fit, (blocks + 1,) for one vector set per AdaLN projection
+    projections = data["generated"].shape[:-2][:1]
     if (float(meta["strength"]) != 1.0 or not 0. <= float(meta["gate"]) <= 1.
             or float(meta["video_shift"]) != 12. or float(meta["audio_shift"]) != 3.):
         raise ValueError("unsupported curve fit recipe")
     for key in ("base_sha256", "adapter_sha256"):
         if len(meta[key]) != 64 or any(c not in "0123456789abcdef" for c in meta[key]):
             raise ValueError("invalid checkpoint hash in curve fit")
-    for key, shape in (("generated", (16, 8)), ("pinned", (1025, 8)), ("t", (16,)), ("r", (16,))):
+    for key, shape in (("generated", (*projections, 16, 8)), ("pinned", (*projections, 1025, 8)),
+                       ("t", (16,)), ("r", (16,))):
         if data[key].shape != shape or data[key].dtype != torch.float32 or not torch.isfinite(data[key]).all():
             raise ValueError(f"invalid {key} in curve fit")
     return data, meta
@@ -56,7 +71,7 @@ def matching_fit(model, weights, strength, gate_override, sigmas_override):
     elif model.patches or model.injections or any(
             key != "model_sampling" for key in model.object_patches):
         reason = ("requires an unmodified checkpoint (only a ModelSampling "
-                  "node may precede ApplyHyperFlow)")
+                  "node may precede ApplyHyperFlowH3)")
     elif not model.cached_patcher_init:
         reason = "checkpoint source is unavailable"
     else:
@@ -68,7 +83,7 @@ def matching_fit(model, weights, strength, gate_override, sigmas_override):
                 base_hash, adapter_hash = file_hash(source), file_hash(weights.path)
                 base_name = Path(source).name
                 base_effort = name_effort = None
-                for path in sorted(FIT_DIRECTORY.glob("*.safetensors")):
+                for path in [p for d in fit_directories() for p in sorted(d.glob("*.safetensors"))]:
                     try:
                         data, meta = read_fit(path)
                     except (OSError, ValueError, TypeError, KeyError,
@@ -82,21 +97,22 @@ def matching_fit(model, weights, strength, gate_override, sigmas_override):
                     base_exact = meta.get("base_sha256") == base_hash
                     adapter_exact = meta.get("adapter_sha256") == adapter_hash
                     if base_exact and adapter_exact:
+                        _log.info("[hyperflow] curve refit: using %s", path)
                         return data, meta
                     if base_exact:
-                        base_effort = base_effort or (data, meta, "adapter")
+                        base_effort = base_effort or (data, meta, path, "adapter")
                     elif meta.get("base_name") == base_name:
                         name_effort = name_effort or (
-                            data, meta, "base" if adapter_exact else "base and adapter")
+                            data, meta, path, "base" if adapter_exact else "base and adapter")
                 for candidate in (base_effort, name_effort):
                     if candidate is None:
                         continue
-                    data, meta, what = candidate
+                    data, meta, path, what = candidate
                     _log.warning(
                         "[hyperflow] curve refit: the %s bytes differ from the "
                         "fitted checkpoint (mirror/repack?); the recipe matches, "
-                        "so the fit is applied best-effort. Delete it from "
-                        "assets/curve_fits if output looks wrong.", what)
+                        "so %s is applied best-effort. Delete it if output looks "
+                        "wrong.", what, path)
                     return data, meta
                 reason = (f"no fit matches this checkpoint, adapter and recipe "
                           f"(base sha256={base_hash}, adapter sha256={adapter_hash})")
@@ -107,9 +123,10 @@ def matching_fit(model, weights, strength, gate_override, sigmas_override):
 
 
 def table_lookup(table, t):
-    pos = t.clamp(0., 1.) * (len(table) - 1)
-    i = pos.floor().long().clamp(max=len(table) - 2)
-    return torch.lerp(table[i], table[i + 1], (pos - i).unsqueeze(1))
+    rows = table.shape[-2]
+    pos = t.clamp(0., 1.) * (rows - 1)
+    i = pos.floor().long().clamp(max=rows - 2)
+    return torch.lerp(table[..., i, :], table[..., i + 1, :], (pos - i).unsqueeze(1))
 
 
 def install_curve_refit(model, fit, verbose=False):
@@ -120,6 +137,8 @@ def install_curve_refit(model, fit, verbose=False):
         raise RuntimeError("This MODEL already has HyperFlow applied; chain it once.")
     shared = {}
     grid = video_schedule_sigmas(json.loads(meta["sigmas"]))
+    projections = len(dm.blocks) + 1  # blocks, then the final layer
+    generated, pinned = data["generated"].reshape(-1, 16, 8), data["pinned"].reshape(-1, 1025, 8)
     warned = False
 
     def warn():
@@ -132,25 +151,24 @@ def install_curve_refit(model, fit, verbose=False):
         ctx = shared["ctx"]
         table = comfy.model_management.cast_to(dm.adaln_t_table, device=t_vals.device)
         if not ctx["curve_active"]:
-            out = table_lookup(table, t_vals)
+            out = table_lookup(table, t_vals)[None]
         else:
             t, r = time_pairs(t_vals, shared)
-            pinned = data["pinned"].to(t_vals.device)
-            out = table_lookup(pinned, t)
+            out = table_lookup(pinned.to(t_vals.device), t)
             # A pair is either one of the 16 trained intervals or pinned (t,t).
             for i, (pt, pr) in enumerate(zip(data["t"].tolist(), data["r"].tolist())):
                 take = ((t - pt).abs() < 1e-6) & ((r - pr).abs() < 1e-6) & (t != r)
-                out[take] = data["generated"][i].to(out.device)
+                out[:, take] = generated[:, i, None].to(out.device)
         # Native non-curve dispatch casts to compute dtype; consumers below
         # retain the original fp32 curve coordinates, as native curves do.
-        ctx["curve_embedding"] = out
-        return out
+        ctx["curve_embedding"] = out.expand(projections, -1, -1)
+        return out[0]
 
-    def wrap_consumer(base, remapped):
+    def wrap_consumer(base, remapped, index):
         def forward(x, t_emb, *args, **kwargs):
             ctx = shared["ctx"]
             return (remapped if ctx["curve_active"] else base)(
-                x, ctx["curve_embedding"], *args, **kwargs)
+                x, ctx["curve_embedding"][index], *args, **kwargs)
         forward._hyperflow_two_time = True
         forward._hyperflow_base_forward = base
         return forward
@@ -195,9 +213,9 @@ def install_curve_refit(model, fit, verbose=False):
     for i, block in enumerate(dm.blocks):
         base = _unwrap_two_time(block.forward)
         model.add_object_patch(f"diffusion_model.blocks.{i}.forward",
-                               wrap_consumer(base, make_block_forward(base, shared)))
+                               wrap_consumer(base, make_block_forward(base, shared), i))
     base = _unwrap_two_time(dm.final_layer.forward)
     model.add_object_patch("diffusion_model.final_layer.forward",
-                           wrap_consumer(base, make_final_forward(base, shared)))
+                           wrap_consumer(base, make_final_forward(base, shared), projections - 1))
     model.add_wrapper_with_key(WrappersMP.DIFFUSION_MODEL, "hyperflow_curve_refit", wrap)
     return float(meta["gate"])

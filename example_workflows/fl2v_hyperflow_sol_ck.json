@@ -980,7 +980,7 @@
     },
     {
       "id": 47,
-      "type": "ApplyHyperFlow",
+      "type": "ApplyHyperFlowH3",
       "pos": [
         54.09302721888233,
         -164.89689929938615
@@ -1016,9 +1016,9 @@
         }
       ],
       "properties": {
-        "aux_id": "Saganaki22/ComfyUI-Hyperflow",
+        "aux_id": "Adudeguyman/ComfyUI-HyperFlow-H3",
         "ver": "unknown",
-        "Node name for S&R": "ApplyHyperFlow",
+        "Node name for S&R": "ApplyHyperFlowH3",
         "ue_properties": {
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {},

@@ -1,4 +1,6 @@
-# ComfyUI-Hyperflow
+# ComfyUI-HyperFlow-H3
+
+An unofficial continuation of [Saganaki22/ComfyUI-Hyperflow](https://github.com/Saganaki22/ComfyUI-Hyperflow) (Apache-2.0), whose GitHub repository is no longer available. Changes from the original: per-block curve fits for pruned bases and hybrids, the Create HyperFlow H3 Curve Fit node, and renamed node IDs (`ApplyHyperFlowH3`, `ApplyHyperFlowH3Advanced`, `HyperFlowH3CurveFit`) so it installs alongside the original. Workflows made with the original nodes need those nodes swapped.
 
 [中文文档 (README_ZH)](README_ZH.md)
 
@@ -21,7 +23,7 @@ https://github.com/user-attachments/assets/3e2e2d5c-6a39-46e9-8946-aa42f08c3d9d
 
 ## Install
 
-1. Clone into `ComfyUI/custom_nodes/ComfyUI-Hyperflow`.
+1. Clone into `ComfyUI/custom_nodes/ComfyUI-HyperFlow-H3`.
 2. Download **one** converted weights file from the [drbaph/Hyperflow-Comfyui](https://huggingface.co/drbaph/Hyperflow-Comfyui) Hugging Face repo (or just enable the node's `download_if_missing` toggle and it fetches itself on first run):
 
 ```
@@ -36,20 +38,35 @@ https://github.com/user-attachments/assets/3e2e2d5c-6a39-46e9-8946-aa42f08c3d9d
 
 3. Restart ComfyUI.
 
+## Supported models
+
+**Full MiniMax-H3 models** (the regular, unpruned downloads such as `minimax_h3_fl2va_int8_convrot` or `minimax_h3_ref2va_int8_convrot`): fully supported. Use the full adapter, `custom_node_hyperflow_8step_v1.0_comfyui.safetensors`, and you get HyperFlow exactly as released.
+
+**Pruned MiniMax-H3 models** (smaller files with part of the model removed to save memory): use the `_pruned` adapter. Pruning removes the part of the model HyperFlow uses to keep track of each step, so on its own HyperFlow can only apply its 8-step LoRA there. For the models below, turn on `experimental_curve_refit` and a small curve fit bundled with this pack puts most of that back; there is nothing extra to download:
+
+- `minimax_h3_fl2va_pruned_int8_convrot`
+- `minimax_h3_ref2va_pruned_int8_convrot`
+- The FL2VA/REF2VA hybrid merges `minimax_h3_hybrid_fl2va_ref2va_b15-49-int8`, `_b20-49-int8`, `_b25-49-int8` and `_b30-49-int8`
+- `Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8`
+
+A curve fit only matches the exact file it was made from. Renaming your copy is fine, but a re-uploaded or re-quantized version of the same model is a different file: the console then says `curve refit disabled` and HyperFlow runs LoRA-only.
+
+**Other pruned models** (merges and finetunes) work LoRA-only. If the model's author also publishes the unpruned version, you can make your own curve fit with the **Create HyperFlow H3 Curve Fit** node; see [`CURVE_FITS.md`](CURVE_FITS.md).
+
 ## Usage
 
 ```
 Load Diffusion Model (MiniMax-H3)
-  -> ApplyHyperFlow            (MODEL -> MODEL + SIGMAS)
+  -> ApplyHyperFlowH3            (MODEL -> MODEL + SIGMAS)
   -> [optional] Model Attention Backend        (core node; dense fallback incl. comfy-kitchen int8)
   -> [optional] Model Sparse Attention         (core node; sol-attn / sla / vsa)
   -> SamplerCustomAdvanced + guider + Euler    (feed the SIGMAS output, not a scheduler)
 ```
 
-- `ApplyHyperFlow` outputs the trained 9-point sigma grid as **SIGMAS** — wire it into `SamplerCustomAdvanced` in place of `BasicScheduler`. Use Euler for the released recipe; other samplers are ablations. The two-time endpoints are derived from `sample_sigmas`.
+- `ApplyHyperFlowH3` outputs the trained 9-point sigma grid as **SIGMAS** — wire it into `SamplerCustomAdvanced` in place of `BasicScheduler`. Use Euler for the released recipe; other samplers are ablations. The two-time endpoints are derived from `sample_sigmas`.
 - `lora_mode`: `bypass` (default) applies the LoRA at run time — matches the reference's unmerged bf16 branches. `merge` folds the backbone LoRA into the weights; the two small base time projections stay in bypass so the endpoint branch reads unmodified weights. Merging quantized weights can change numerical results.
 - `download_if_missing` fetches the chosen `variant` (`auto` matches the detected base) from [drbaph/Hyperflow-Comfyui](https://huggingface.co/drbaph/Hyperflow-Comfyui) into `models/hyperflow/` — exactly the published `.safetensors`, nothing else. Off by default.
-- `ApplyHyperFlowAdvanced` adds gate and sigma-grid overrides (ablations; defaults reproduce the released model).
+- `ApplyHyperFlowH3Advanced` adds gate and sigma-grid overrides (ablations; defaults reproduce the released model).
 
 ### Sol-Attn (optional sparse attention) — core node settings
 
@@ -69,7 +86,7 @@ SLA is a different sparse method — use it only with SLA-trained weights.
 
 ### Pruned / curve bases — experimental curve refit
 
-Pruned MiniMax-H3 bases have no `time_embedder`, so the two-time `(t, r)` pathway cannot apply — by default the pruned build applies the backbone LoRA only and runs single-time (off-recipe). The **experimental curve refit** restores most of the two-time signal through a tiny checkpoint-bound fit (~34 KB, bundled in `assets/curve_fits/` for the FL2VA and REF2VA pruned int8 checkpoints — no download, no extra model weights).
+Pruned MiniMax-H3 bases have no `time_embedder`, so the two-time `(t, r)` pathway cannot apply — by default the pruned build applies the backbone LoRA only and runs single-time (off-recipe). The **experimental curve refit** restores most of the two-time signal through a small checkpoint-bound fit (~1.7 MB, one set of values per block; no download, no extra model weights). Fits are bundled in `assets/curve_fits/` for the FL2VA and REF2VA pruned int8 checkpoints, the FL2VA/REF2VA block-spliced hybrids (b15/b20/b25/b30-49) and Singularity REF2VA pruned v1.3 — see the [list](assets/curve_fits/README.md).
 
 
 
@@ -84,7 +101,7 @@ https://github.com/user-attachments/assets/e72c45e3-2cc3-48ce-bb1a-2f0c25e7d602
 - Same sampling as full bases: **Euler** + the node's **SIGMAS** output + the Sol-Attn table above.
 - Console: `[hyperflow] curve refit disabled: <reason>` means the fallback engaged — check strength/overrides/checkpoint.
 
-Measured against the full base (fixed prompt/seed/latents): FL2VA video cosine **0.81 → 0.88**, REF2VA audio cosine **0.93 → 0.99**. It recovers *most* — not all — of the missing conditioning; the full base remains the reference. Details and per-family numbers: [`validation/curve_findings.md`](validation/curve_findings.md). New pruned checkpoints need their own fit (`validation/curve_spike.py`).
+Measured against the full base with the earlier shared (one vector for all blocks) fits (fixed prompt/seed/latents): FL2VA video cosine **0.81 → 0.88**, REF2VA audio cosine **0.93 → 0.99**. It recovers *most* — not all — of the missing conditioning; the full base remains the reference. Details and per-family numbers: [`validation/curve_findings.md`](validation/curve_findings.md). Other pruned checkpoints, including block-spliced hybrids, need their own fit: generate one with the **Create HyperFlow H3 Curve Fit (Pruned Bases)** node (or `tools/fit_curve.py`), which writes it to `models/hyperflow/curve_fits/` — see [`CURVE_FITS.md`](CURVE_FITS.md).
 
 ## Notes
 
@@ -94,7 +111,7 @@ Measured against the full base (fixed prompt/seed/latents): FL2VA video cosine *
 - **Base detection is automatic**: the node inspects the loaded model — full base (has `time_embedder`) or pruned/curve base (no `time_embedder`) — and enforces the matching weights build with a clear error that names the right file. The pruned-base build applies the backbone LoRA only and runs single-time (off-recipe).
 - **Experimental curve refit** for pruned/curve bases: see the dedicated section above.
 - **Quantized bases** (int8/fused ops): LoRA targets that the base folds into a fused kernel (no hookable module) are detected and applied through the merge path automatically — the console report lists them as `N fused/int8 targets via merge`.
-- **Model sampling shifts**: the H3 model already defaults to video shift 12 / audio shift 3. The core ModelSampling node goes after `ApplyHyperFlow` in the chain, and is only needed if you want non-default shifts.
+- **Model sampling shifts**: the H3 model already defaults to video shift 12 / audio shift 3. The core ModelSampling node goes after `ApplyHyperFlowH3` in the chain, and is only needed if you want non-default shifts.
 - **aimdo malloc-graph**: on Comfy builds whose model compiler crashes on patched MiniMax-H3 forwards, the node disables the compiler for its own model calls.
 - Weights are a Model Derivative of MiniMax-H3 under the [MiniMax H3 Community License](https://huggingface.co/videorebirth/hyperflow); this pack's code is Apache-2.0 (the schedule/embedder ports derive from the HyperFlow and diffusers code, see the upstream `THIRD_PARTY_NOTICES.md`).
 

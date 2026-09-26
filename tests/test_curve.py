@@ -13,7 +13,7 @@ from comfy.ldm.minimax.model import MiniMaxH3Model, time_shift_sigma
 from comfy.model_patcher import ModelPatcher
 from hyperflow_h3.curve import (file_hash, install_curve_refit, matching_fit,
                                 table_lookup)
-from hyperflow_h3.nodes import ApplyHyperFlow, ApplyHyperFlowAdvanced
+from hyperflow_h3.nodes import ApplyHyperFlowH3, ApplyHyperFlowH3Advanced
 from hyperflow_h3.schedule import DEFAULT_SIGMAS_8STEP, video_schedule_sigmas
 from test_embedder import _FakePatcher
 
@@ -101,6 +101,37 @@ def test_curve_routes_generated_pinned_and_masked_rows(workflow, masked):
             assert not torch.equal(expected_v, expected_a)
 
 
+def test_per_projection_fit_routes_each_projection_its_own_rows():
+    dm, (data, meta), grid = fixture()
+    data["generated"] = torch.stack((data["generated"], torch.randn(16, 8) * .1))
+    data["pinned"] = torch.stack((data["pinned"], torch.randn(1025, 8) * .1))
+    captured = {}
+    block, final = dm.blocks[0].forward, dm.final_layer.forward
+
+    def capture_block(x, emb, *args, **kwargs):
+        captured["block"] = emb
+        return block(x, emb, *args, **kwargs)
+
+    def capture_final(x, emb, video, audio, *args, **kwargs):
+        captured["final"] = (emb, video, audio)
+        return final(x, emb, video, audio, *args, **kwargs)
+
+    dm.blocks[0].forward, dm.final_layer.forward = capture_block, capture_final
+    patcher = _FakePatcher(dm)
+    install_curve_refit(patcher, (data, meta))
+    for key, value in patcher.object_patches.items():
+        comfy.utils.set_attr(dm, key.removeprefix("diffusion_model."), value)
+    video, audio = torch.randn(1, 1, 1, 2, 4), torch.randn(1, 2, 2, 1)
+    payload = {"text_token_tags": torch.tensor([0, 2]),
+               "visual_cond_noise_aug": 0., "audio_cond_noise_aug": 0.}
+    patcher.wrappers[0](dm._forward, [video, audio], grid[2].reshape(1) * 1000.,
+                        torch.randn(1, 2, 12), {"sample_sigmas": grid}, minimax_payload=payload)
+    emb, v, a = captured["final"]
+    torch.testing.assert_close(emb[v[2]], data["generated"][1, 2])
+    torch.testing.assert_close(emb[a[2]], data["generated"][1, 10])
+    torch.testing.assert_close(captured["block"][v[2]], data["generated"][0, 2])
+
+
 @pytest.mark.parametrize("mismatch", ["missing", "schedule", "shift", "time"])
 def test_runtime_mismatch_is_bit_exact_backbone_fallback(mismatch, caplog):
     dm, fit, grid = fixture()
@@ -143,6 +174,7 @@ def test_model_patcher_restores_curve_attributes_and_reinstall():
 @pytest.mark.parametrize("mismatch", [None, "base", "strength", "gate", "sigmas", "corrupt",
                                        "fit_gate", "fit_shift", "fit_sigmas", "fit_shape", "fit_nan"])
 def test_fit_binding_and_recipe_fallback(tmp_path, monkeypatch, caplog, mismatch):
+    caplog.set_level(logging.INFO, logger="comfy.hyperflow")
     # NB "adapter" is intentionally absent: a byte-different adapter on an
     # exact base now applies best-effort (covered by the test below).
     import hyperflow_h3.curve as curve
@@ -158,7 +190,7 @@ def test_fit_binding_and_recipe_fallback(tmp_path, monkeypatch, caplog, mismatch
     if mismatch == "fit_nan": data["pinned"][0, 0] = float("nan")
     path = tmp_path / "fit.safetensors"
     save_file(data, path, metadata=meta)
-    monkeypatch.setattr(curve, "FIT_DIRECTORY", tmp_path)
+    monkeypatch.setattr(curve, "fit_directories", lambda: [tmp_path])
     model = SimpleNamespace(patches={}, object_patches={}, injections={}, cached_patcher_init=(None, (checkpoint,)))
     weights = SimpleNamespace(path=adapter, metadata=SimpleNamespace(gate=.25, sigmas=DEFAULT_SIGMAS_8STEP))
     if mismatch == "base": checkpoint.write_bytes(b"different checkpoint")
@@ -167,6 +199,7 @@ def test_fit_binding_and_recipe_fallback(tmp_path, monkeypatch, caplog, mismatch
                        .25 if mismatch == "gate" else None, "1,0" if mismatch == "sigmas" else None)
     assert (fit is None) == (mismatch is not None)
     assert sum("using backbone only" in r.message for r in caplog.records) == int(mismatch is not None)
+    assert any(f"using {path}" in r.message for r in caplog.records) == (mismatch is None)
 
 
 def test_fit_name_match_applies_best_effort_with_warning(tmp_path, monkeypatch, caplog):
@@ -183,7 +216,7 @@ def test_fit_name_match_applies_best_effort_with_warning(tmp_path, monkeypatch, 
     meta.update(base_name=checkpoint.name,
                 base_sha256=file_hash(checkpoint), adapter_sha256=file_hash(adapter))
     save_file(data, tmp_path / "fit.safetensors", metadata=meta)
-    monkeypatch.setattr(curve, "FIT_DIRECTORY", tmp_path)
+    monkeypatch.setattr(curve, "fit_directories", lambda: [tmp_path])
     model = SimpleNamespace(patches={}, object_patches={}, injections={},
                             cached_patcher_init=(None, (checkpoint,)))
     weights = SimpleNamespace(path=adapter, metadata=SimpleNamespace(gate=.25, sigmas=DEFAULT_SIGMAS_8STEP))
@@ -194,7 +227,7 @@ def test_fit_name_match_applies_best_effort_with_warning(tmp_path, monkeypatch, 
     assert fit is not None
     assert sum("best-effort" in r.message for r in caplog.records) == 1
 
-    # A ModelSampling node before ApplyHyperFlow is allowed...
+    # A ModelSampling node before ApplyHyperFlowH3 is allowed...
     model.object_patches = {"model_sampling": object()}
     assert matching_fit(model, weights, 1., None, None) is not None
     # ...anything else patching the model first is not.
@@ -221,7 +254,7 @@ def test_fit_name_match_applies_best_effort_with_warning(tmp_path, monkeypatch, 
 
 
 def test_curve_toggle_defaults_off():
-    for node in (ApplyHyperFlow, ApplyHyperFlowAdvanced):
+    for node in (ApplyHyperFlowH3, ApplyHyperFlowH3Advanced):
         assert node.INPUT_TYPES()["optional"]["experimental_curve_refit"][1]["default"] is False
 
 

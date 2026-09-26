@@ -1,21 +1,25 @@
-"""Apply HyperFlow (8-step LoRA + two-time conditioning) to a MiniMax-H3 model."""
+"""Apply HyperFlow H3 (8-step LoRA + two-time conditioning) to a MiniMax-H3 model."""
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
+import comfy.model_management
+import comfy.utils
 import folder_paths
 
-from hyperflow_h3.apply import apply_lora
-from hyperflow_h3.compiler import install_compiler_workaround
-from hyperflow_h3.curve import matching_fit, install_curve_refit
-from hyperflow_h3.embedder import install_two_time
-from hyperflow_h3.schedule import validate_sigmas, video_schedule_sigmas
-from hyperflow_h3.weights import ensure_downloaded, load_weights, resolve_weights
+from .apply import apply_lora
+from .compiler import install_compiler_workaround
+from .curve import matching_fit, install_curve_refit
+from .curve_fit import fit_curve, fit_filename, parse_splice
+from .embedder import install_two_time
+from .schedule import validate_sigmas, video_schedule_sigmas
+from .weights import ensure_downloaded, load_weights, resolve_weights
 
 _log = logging.getLogger("comfy.hyperflow")
 
-_LAYOUT_HINT = (" Chain order: Load Diffusion Model -> ApplyHyperFlow -> "
+_LAYOUT_HINT = (" Chain order: Load Diffusion Model -> ApplyHyperFlowH3 -> "
                 "(optional) Model Attention Backend / Model Sparse Attention -> "
                 "SamplerCustomAdvanced with the SIGMAS output.")
 
@@ -32,7 +36,7 @@ def _check_base(model):
     attn0 = getattr(blocks[0], "attn", None) if blocks else None
     if dm is None or attn0 is None or not hasattr(attn0, "qkv_proj"):
         raise RuntimeError(
-            "ApplyHyperFlow needs a MiniMax-H3 MODEL (diffusion_model with "
+            "ApplyHyperFlowH3 needs a MiniMax-H3 MODEL (diffusion_model with "
             "blocks[].attn.qkv_proj). Connect a MiniMax-H3 load checkpoint / "
             "load diffusion model output first." + _LAYOUT_HINT)
     pruned = hasattr(dm, "adaln_t_table") \
@@ -102,11 +106,12 @@ def _apply(model, hyperflow_file, strength, lora_mode, verbose,
 
 
 def _file_combo():
-    names = folder_paths.get_filename_list("hyperflow")
+    names = [n for n in folder_paths.get_filename_list("hyperflow")
+             if not n.replace("\\", "/").startswith("curve_fits/")]
     return names or ["<download the converted HyperFlow .safetensors into models/hyperflow/>"]
 
 
-class ApplyHyperFlow:
+class ApplyHyperFlowH3:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
@@ -172,7 +177,7 @@ class ApplyHyperFlow:
         return (new_model, sigmas)
 
 
-class ApplyHyperFlowAdvanced:
+class ApplyHyperFlowH3Advanced:
     """Everything the base node does, plus the ablation knobs: gate override and
     a custom sigma grid (both deviate from the released recipe)."""
 
@@ -240,8 +245,74 @@ class ApplyHyperFlowAdvanced:
         return (new_model, sigmas_out)
 
 
-NODE_CLASS_MAPPINGS = {"ApplyHyperFlow": ApplyHyperFlow,
-                       "ApplyHyperFlowAdvanced": ApplyHyperFlowAdvanced}
+class HyperFlowH3CurveFit:
+    """Writes a per-projection curve fit for a pruned/curve base into
+    <hyperflow folder>/curve_fits/, where experimental_curve_refit finds it."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        models = folder_paths.get_filename_list("diffusion_models")
+        return {"required": {
+            "pruned_model": (models, {
+                "tooltip": "The pruned/curve MiniMax-H3 base you load in ComfyUI."}),
+            "teacher_model": (models, {
+                "tooltip": "The full-weight base the pruned file was made from "
+                           "(bf16/fp16 or int8_tensorwise). For hybrids, the base "
+                           "that supplies the time embedder and final layer."}),
+            "hyperflow_file": (_file_combo(), {
+                "tooltip": "A HyperFlow file with the time-embedder LoRAs: the "
+                           "original minimax_h3_hyperflow_8step_v1.0 or the "
+                           "converted full build (not the _pruned build)."}),
+            "node_adapter": (_file_combo(), {
+                "tooltip": "The adapter Apply HyperFlow H3 loads for this base "
+                           "(normally the _pruned build). The fit binds to its hash."}),
+            "splice": ("STRING", {
+                "default": "", "multiline": True,
+                "tooltip": "Hybrids only: one line per donor, FILE:FIRST-LAST, "
+                           "taking those teacher blocks from another full base, e.g. "
+                           "minimax_h3_ref2va_int8_convrot.safetensors:20-49"}),
+        }}
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("report",)
+    FUNCTION = "fit"
+    OUTPUT_NODE = True
+    CATEGORY = "model_patch/video/tools"
+    DESCRIPTION = (
+        "One-off tool, not a generation step: queue it on its own. Fits "
+        "HyperFlow's two-time conditioning to a pruned MiniMax-H3 base (or a "
+        "block-spliced hybrid) and saves it to models/hyperflow/curve_fits/. Then "
+        "enable experimental_curve_refit on Apply HyperFlow H3. Takes under a minute "
+        "to a few minutes; see CURVE_FITS.md.")
+
+    def fit(self, pruned_model, teacher_model, hyperflow_file, node_adapter, splice):
+        splices = []
+        for line in splice.splitlines():
+            if line.strip():
+                name, first, last = parse_splice(line)
+                splices.append((folder_paths.get_full_path_or_raise("diffusion_models", name), first, last))
+        adapter = folder_paths.get_full_path_or_raise("hyperflow", node_adapter)
+        roots = folder_paths.get_folder_paths("hyperflow")
+        root = next((r for r in roots if Path(adapter).is_relative_to(r)), roots[0])
+        pruned = folder_paths.get_full_path_or_raise("diffusion_models", pruned_model)
+        device = comfy.model_management.get_torch_device()
+        comfy.model_management.free_memory(5 * 1024 ** 3, device)
+        bar = comfy.utils.ProgressBar(51)
+
+        def progress():
+            comfy.model_management.throw_exception_if_processing_interrupted()
+            bar.update(1)
+
+        report = fit_curve(pruned, folder_paths.get_full_path_or_raise("diffusion_models", teacher_model),
+                           splices, folder_paths.get_full_path_or_raise("hyperflow", hyperflow_file),
+                           adapter, Path(root) / "curve_fits" / fit_filename(pruned), device, progress)
+        return {"ui": {"text": [report]}, "result": (report,)}
+
+
+NODE_CLASS_MAPPINGS = {"ApplyHyperFlowH3": ApplyHyperFlowH3,
+                       "ApplyHyperFlowH3Advanced": ApplyHyperFlowH3Advanced,
+                       "HyperFlowH3CurveFit": HyperFlowH3CurveFit}
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "ApplyHyperFlow": "Apply HyperFlow (MiniMax-H3 8-Step)",
-    "ApplyHyperFlowAdvanced": "Apply HyperFlow Advanced (Ablations)"}
+    "ApplyHyperFlowH3": "Apply HyperFlow H3 (MiniMax-H3 8-Step)",
+    "ApplyHyperFlowH3Advanced": "Apply HyperFlow H3 Advanced (Ablations)",
+    "HyperFlowH3CurveFit": "Create HyperFlow H3 Curve Fit (Pruned Bases)"}

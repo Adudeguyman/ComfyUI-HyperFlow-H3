@@ -12,3 +12,9 @@ _PACKAGE = Path(__file__).resolve().parents[1]       # this node pack
 for _p in (str(_COMFYUI_ROOT), str(_PACKAGE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import folder_paths  # noqa: E402
+
+# The pack __init__ registers this in ComfyUI; tests import hyperflow_h3 directly.
+if "hyperflow" not in folder_paths.folder_names_and_paths:
+    folder_paths.add_model_folder_path("hyperflow", str(_COMFYUI_ROOT / "models" / "hyperflow"))

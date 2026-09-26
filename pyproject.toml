@@ -1,14 +1,16 @@
 [project]
-name = "comfyui-hyperflow"
-version = "1.3.1"
+name = "comfyui-hyperflow-h3"
+version = "1.4.0"
 description = "HyperFlow: 8-step LoRA + two-time (t, r) conditioning for MiniMax-H3"
 license = { file = "LICENSE" }
+requires-python = ">=3.11"
 dependencies = []
+classifiers = ["Operating System :: OS Independent"]
 
 [project.urls]
-Repository = "https://github.com/Saganaki22/ComfyUI-Hyperflow"
+Repository = "https://github.com/Adudeguyman/ComfyUI-HyperFlow-H3"
+"Bug Tracker" = "https://github.com/Adudeguyman/ComfyUI-HyperFlow-H3/issues"
 
 [tool.comfy]
-PublisherId = "saganaki22"
-DisplayName = "ComfyUI-Hyperflow"
-Icon = "https://avatars.githubusercontent.com/u/84208527"
+PublisherId = "adudeguyman"
+DisplayName = "HyperFlow for MiniMax-H3"
