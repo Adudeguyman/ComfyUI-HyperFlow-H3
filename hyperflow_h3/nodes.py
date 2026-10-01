@@ -10,7 +10,6 @@ import comfy.utils
 import folder_paths
 
 from .apply import apply_lora
-from .compiler import install_compiler_workaround
 from .curve import matching_fit, install_curve_refit
 from .curve_fit import fit_curve, fit_filename, parse_splice
 from .embedder import install_two_time
@@ -84,7 +83,6 @@ def _apply(model, hyperflow_file, strength, lora_mode, verbose,
         gate = install_two_time(new_model, weights, gate_override, verbose)
     elif fit is not None:
         gate = install_curve_refit(new_model, fit, verbose)
-    install_compiler_workaround(new_model)
 
     raw = None
     if sigmas_override:
